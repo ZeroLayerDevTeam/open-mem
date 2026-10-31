@@ -1,0 +1,17 @@
+{
+  "name": "open-mem",
+  "version": "0.1.0",
+  "description": "Open, local-first persistent memory for Claude Code. Compresses sessions with a local LLM (Ollama) or none — never your Claude plan. Imports claude-mem history automatically.",
+  "author": {
+    "name": "claude-open-mem contributors"
+  },
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "mcp",
+    "sqlite",
+    "ollama",
+    "claude-mem"
+  ],
+  "displayName": "claude-open-mem"
+}

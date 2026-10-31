@@ -1,0 +1,109 @@
+// Optional LLM compression. Never uses the user's Claude subscription:
+// a local Ollama, any OpenAI-compatible endpoint the user configures, or none.
+
+const OLLAMA_DEFAULT = 'http://127.0.0.1:11434';
+// gemma3 measured best at skipping trivial calls and fastest on a 16 GB GPU.
+const PREFERRED = [/gemma/i, /qwen/i, /llama/i, /mistral/i, /phi/i];
+
+async function fetchJson(url, { body, headers = {}, timeoutMs }) {
+  const res = await fetch(url, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    const err = new Error(`HTTP ${res.status} from ${url}: ${text.slice(0, 300)}`);
+    err.status = res.status;
+    throw err;
+  }
+  return JSON.parse(text);
+}
+
+export function pickOllamaModel(names, wanted) {
+  if (wanted && names.includes(wanted)) return wanted;
+  const chat = names.filter((n) => !/embed|bge|nomic|minilm/i.test(n));
+  for (const re of PREFERRED) {
+    const hit = chat.find((n) => re.test(n));
+    if (hit) return hit;
+  }
+  return chat[0] || null;
+}
+
+// Returns { kind: 'ollama'|'openai'|'none', model, baseUrl, apiKey, reason }
+export async function resolveProvider(settings) {
+  const p = settings.provider || 'auto';
+  if (p === 'none') return { kind: 'none', reason: 'provider=none' };
+  if (p === 'openai') {
+    if (!settings.baseUrl || !settings.model) return { kind: 'none', reason: 'openai provider needs baseUrl and model' };
+    return { kind: 'openai', model: settings.model, baseUrl: settings.baseUrl.replace(/\/+$/, ''), apiKey: settings.apiKey };
+  }
+  const baseUrl = (settings.baseUrl || OLLAMA_DEFAULT).replace(/\/+$/, '');
+  try {
+    const tags = await fetchJson(`${baseUrl}/api/tags`, { timeoutMs: 2500 });
+    const model = pickOllamaModel((tags.models || []).map((m) => m.name), settings.model);
+    if (model) return { kind: 'ollama', model, baseUrl };
+    return { kind: 'none', reason: `Ollama at ${baseUrl} has no chat model (run: ollama pull qwen3:8b)` };
+  } catch (err) {
+    return { kind: 'none', reason: `Ollama not reachable at ${baseUrl} (${err.message})` };
+  }
+}
+
+export function parseJsonReply(text) {
+  const cleaned = String(text || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/```(?:json)?/gi, '');
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start < 0 || end <= start) throw new Error(`LLM reply has no JSON object: ${cleaned.slice(0, 200)}`);
+  return JSON.parse(cleaned.slice(start, end + 1));
+}
+
+export async function completeJson(provider, system, user, timeoutMs = 120000) {
+  const messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
+  if (provider.kind === 'ollama') {
+    const res = await fetchJson(`${provider.baseUrl}/api/chat`, {
+      timeoutMs,
+      body: { model: provider.model, messages, stream: false, format: 'json', think: false,
+        options: { temperature: 0.2, num_ctx: 8192 } },
+    });
+    return parseJsonReply(res.message?.content);
+  }
+  if (provider.kind === 'openai') {
+    const headers = provider.apiKey ? { authorization: `Bearer ${provider.apiKey}` } : {};
+    const body = { model: provider.model, messages, temperature: 0.2, response_format: { type: 'json_object' } };
+    let res;
+    try {
+      res = await fetchJson(`${provider.baseUrl}/chat/completions`, { body, headers, timeoutMs });
+    } catch (err) {
+      if (err.status !== 400) throw err;
+      delete body.response_format; // some compatible servers reject it
+      res = await fetchJson(`${provider.baseUrl}/chat/completions`, { body, headers, timeoutMs });
+    }
+    return parseJsonReply(res.choices?.[0]?.message?.content);
+  }
+  throw new Error('No LLM provider available');
+}
+
+export const OBSERVATION_SYSTEM = `You record long-term memory for a coding assistant.
+You receive ONE tool call the assistant made while working on the user's request.
+Decide whether it holds something worth remembering in future sessions: a decision, a discovery about the code or system,
+a bug and its cause or fix, a feature or config change, where something lives, a gotcha.
+Most tool calls are NOT worth it. Skip when the call is routine: listing or globbing files, a read or search
+whose output shows nothing surprising, a command that just succeeded with ordinary output, a failed lookup.
+Keep it only if a future session would genuinely benefit from knowing it.
+Write title, subtitle, narrative and facts in the SAME LANGUAGE as the user's request (Spanish request -> Spanish).
+Be concrete: names, paths, values, error strings.
+Reply with ONLY a JSON object:
+{"skip": false, "type": "discovery|decision|bugfix|feature|refactor|change", "title": "short title",
+ "subtitle": "one sentence", "narrative": "2-5 sentences", "facts": ["atomic fact", "..."], "concepts": ["keyword", "..."]}
+or {"skip": true}`;
+
+export const SUMMARY_SYSTEM = `You summarize one turn of work between a user and a coding assistant for long-term memory.
+You receive the user's request, the observations recorded during the turn and the assistant's final message.
+Write in the same language as the user's request. Be concrete. If nothing meaningful happened, skip.
+Reply with ONLY a JSON object:
+{"skip": false, "request": "what the user asked", "investigated": "...", "learned": "...", "completed": "...",
+ "next_steps": "...", "notes": "..."}
+or {"skip": true}`;

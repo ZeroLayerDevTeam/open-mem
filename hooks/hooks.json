@@ -1,0 +1,9 @@
+{
+  "description": "claude-open-mem capture hooks",
+  "hooks": {
+    "SessionStart": [{ "matcher": "startup|resume|clear|compact", "hooks": [{ "type": "command", "command": "node --no-warnings \"${CLAUDE_PLUGIN_ROOT}/src/hook.mjs\" session-start", "timeout": 30 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "node --no-warnings \"${CLAUDE_PLUGIN_ROOT}/src/hook.mjs\" user-prompt", "timeout": 15 }] }],
+    "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "node --no-warnings \"${CLAUDE_PLUGIN_ROOT}/src/hook.mjs\" post-tool", "timeout": 15 }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node --no-warnings \"${CLAUDE_PLUGIN_ROOT}/src/hook.mjs\" stop", "timeout": 15 }] }]
+  }
+}

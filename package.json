@@ -1,0 +1,10 @@
+{
+  "name": "claude-open-mem",
+  "version": "0.1.0",
+  "description": "Open, local-first persistent memory for Claude Code (MCP + hooks, SQLite FTS5, optional local LLM).",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22.13" },
+  "bin": { "claude-open-mem": "src/cli.mjs" },
+  "scripts": { "test": "node --no-warnings --test \"test/*.test.mjs\"" }
+}

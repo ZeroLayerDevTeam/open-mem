@@ -1,0 +1,14 @@
+{
+  "name": "claude-open-mem",
+  "owner": {
+    "name": "claude-open-mem contributors"
+  },
+  "plugins": [
+    {
+      "name": "open-mem",
+      "source": "./",
+      "description": "Open, local-first persistent memory for Claude Code with automatic claude-mem import."
+    }
+  ],
+  "description": "claude-open-mem: open, local-first persistent memory for Claude Code."
+}
