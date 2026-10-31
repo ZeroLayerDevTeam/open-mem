@@ -25,7 +25,7 @@ Requirements: Claude Code, Node.js ≥ 22.13 on `PATH`. Optional: Ollama with a 
 (`ollama pull gemma3:12b`, or `gemma3:4b` / `qwen3:8b` on smaller GPUs).
 
 ```bash
-claude plugin marketplace add <your-github-user>/claude-open-mem
+claude plugin marketplace add https://gitlab.com/noelcheda/claude-open-mem.git
 claude plugin install open-mem@claude-open-mem
 ```
 
