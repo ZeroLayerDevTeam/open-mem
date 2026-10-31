@@ -59,7 +59,8 @@ function parseValue(key, raw) {
   return raw;
 }
 
-const progress = (x) => process.stdout.write(`\rpushed ${JSON.stringify(x)}`);
+// Overwrite one line on a terminal; a pipe or log only gets the final result.
+const progress = (x) => process.stdout.isTTY && process.stdout.write(`\rpushed ${JSON.stringify(x)}`);
 
 async function main() {
   const [cmd = 'help', ...args] = process.argv.slice(2);
