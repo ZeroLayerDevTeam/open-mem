@@ -48,7 +48,11 @@ export function dataPath(...parts) {
 }
 
 export function ensureDataDir() {
-  fs.mkdirSync(dataPath('logs'), { recursive: true });
+  // Owner-only: the database holds the user's whole history (mode is ignored on Windows).
+  fs.mkdirSync(dataPath('logs'), { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(dataDir(), 0o700);
+  } catch {}
 }
 
 export function loadSettings() {
