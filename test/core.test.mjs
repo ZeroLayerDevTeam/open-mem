@@ -148,3 +148,19 @@ test('hooks record prompt and tool calls, session start injects context', () => 
   const out = JSON.parse(start.stdout);
   assert.match(out.hookSpecificOutput.additionalContext, /Configuración del proxy nginx/);
 });
+
+test('redaction removes secrets but keeps ordinary code', async () => {
+  const { redactText, redact } = await import('../src/redact.mjs');
+  const fake = 'glpat-' + 'a1B2c3D4e5F6g7H8i9J0k';
+  const out = redactText(`GITLAB_TOKEN=${fake}\npassword: "hunter2hunter2"\nhttps://bob:s3cret@host/x\n<private>mi dni</private>`);
+  assert.doesNotMatch(out, /a1B2c3D4|hunter2|s3cret|mi dni/);
+  assert.equal(redactText("tokenize='unicode61' max_tokens: 4000"), "tokenize='unicode61' max_tokens: 4000");
+  assert.deepEqual(redact({ apiKey: 'abc', nested: [{ v: `Bearer ${'x'.repeat(30)}` }] }), { apiKey: '[REDACTED]', nested: [{ v: 'Bearer [REDACTED]' }] });
+  const db = openDb();
+  const id = store.insertObservation(db, { project: 'zeta', title: 't', narrative: `clave sk-ant-${'Z'.repeat(30)}`, created_at: Date.now() });
+  assert.doesNotMatch(db.prepare('SELECT narrative FROM observations WHERE id = ?').get(id).narrative, /ZZZZ/);
+  db.prepare("UPDATE observations SET narrative = 'raw password=letmein123' WHERE id = ?").run(id);
+  assert.equal(store.redactExisting(db), 1);
+  assert.equal(store.search(db, { query: 'letmein123' }).length, 0, 'FTS index no longer holds the secret');
+  db.close();
+});

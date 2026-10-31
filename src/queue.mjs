@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { dataPath, log } from './config.mjs';
 import { transaction } from './db.mjs';
 import { completeJson, resolveProvider, OBSERVATION_SYSTEM, SUMMARY_SYSTEM } from './llm.mjs';
+import { redact } from './redact.mjs';
 import { insertObservation, promptText, turnObservations, upsertSummary } from './store.mjs';
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cli.mjs');
@@ -15,7 +16,7 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
 export function enqueue(db, kind, sessionId, project, payload) {
   db.prepare('INSERT INTO queue (kind, session_id, project, payload, created_at) VALUES (?, ?, ?, ?, ?)')
-    .run(kind, sessionId, project, JSON.stringify(payload), Date.now());
+    .run(kind, sessionId, project, JSON.stringify(redact(payload)), Date.now());
 }
 
 function claim(db) {

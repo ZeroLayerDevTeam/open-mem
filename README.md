@@ -68,6 +68,15 @@ node "$OM" config                 # show settings
 
 Inside Claude Code you can also ask Claude to use the `open-mem` skill.
 
+## Privacy
+
+- Everything stays in `~/.claude-open-mem/` unless you point `provider` at a remote endpoint.
+- Secrets are redacted before anything is queued, stored or sent to the LLM: API keys (Anthropic, OpenAI,
+  OpenRouter, GitHub, GitLab, AWS, Google, Slack, Stripe, Telegram, Context7), JWTs, bearer tokens, private keys,
+  `user:pass@` in URLs and `password=` / `token:`-style assignments. Imported claude-mem rows get the same treatment.
+- Wrap anything in `<private>…</private>` in a prompt to keep it out of memory.
+- `node "$OM" redact` re-scans stored memory (useful after upgrading redaction patterns).
+
 ## Migrating from claude-mem
 
 The import is automatic and incremental: while both are installed, every session start copies new claude-mem rows.

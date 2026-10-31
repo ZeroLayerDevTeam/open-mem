@@ -1,11 +1,12 @@
 // Reads and writes of memory rows. Pure functions over an open db handle.
+import { redactText } from './redact.mjs';
 
 const OBS_COLS = ['session_id', 'project', 'prompt_number', 'type', 'title', 'subtitle', 'narrative', 'facts',
   'concepts', 'files_read', 'files_modified', 'tool', 'created_at', 'source', 'source_id'];
 const SUM_COLS = ['session_id', 'project', 'prompt_number', 'request', 'investigated', 'learned', 'completed',
   'next_steps', 'notes', 'created_at', 'source', 'source_id'];
 
-const asText = (v) => (v == null ? null : Array.isArray(v) ? JSON.stringify(v) : String(v));
+const asText = (v) => (v == null ? null : redactText(Array.isArray(v) ? JSON.stringify(v) : String(v)));
 
 function insertRow(db, table, cols, row, conflict) {
   const values = cols.map((c) => {
@@ -40,7 +41,7 @@ export function addPrompt(db, { sessionId, project, cwd, text }) {
     'UPDATE sessions SET prompt_counter = prompt_counter + 1 WHERE session_id = ? RETURNING prompt_counter',
   ).get(sessionId);
   db.prepare('INSERT INTO prompts (session_id, project, prompt_number, text, created_at) VALUES (?, ?, ?, ?, ?)')
-    .run(sessionId, project, n, text, Date.now());
+    .run(sessionId, project, n, redactText(text), Date.now());
   return n;
 }
 
@@ -166,6 +167,34 @@ export function timeline(db, anchorRef, before = 5, after = 5) {
     .sort((a, b) => (dir === 'DESC' ? b.created_at - a.created_at : a.created_at - b.created_at)).slice(0, n);
   const self = { ...db.prepare(`SELECT id, project, ${r.kind === 'obs' ? 'type, title' : "'summary' AS type, request AS title"}, created_at FROM ${table} WHERE id = ?`).get(r.id), kind: r.kind, anchor: true };
   return [...merge('<', 'DESC', before).reverse(), self, ...merge('>', 'ASC', after)];
+}
+
+// Re-applies redaction to rows stored before redaction existed (or after patterns improve).
+export function redactExisting(db) {
+  const targets = [
+    ['observations', ['title', 'subtitle', 'narrative', 'facts', 'concepts']],
+    ['summaries', ['request', 'investigated', 'learned', 'completed', 'next_steps', 'notes']],
+    ['prompts', ['text']],
+  ];
+  let changed = 0;
+  for (const [table, cols] of targets) {
+    const rows = db.prepare(`SELECT id, ${cols.join(', ')} FROM ${table}`).all();
+    const upd = db.prepare(`UPDATE ${table} SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const r of rows) {
+        const next = cols.map((c) => redactText(r[c]) ?? null);
+        if (next.some((v, i) => v !== (r[cols[i]] ?? null))) { upd.run(...next, r.id); changed++; }
+      }
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+  db.exec("INSERT INTO obs_fts (obs_fts) VALUES ('optimize'); INSERT INTO sum_fts (sum_fts) VALUES ('optimize');");
+  db.exec('PRAGMA wal_checkpoint(TRUNCATE); VACUUM;'); // drop old pages that still hold the secrets
+  return changed;
 }
 
 export function stats(db) {

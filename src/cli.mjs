@@ -5,7 +5,7 @@ import { openDb } from './db.mjs';
 import { claudeMemDbPath, installedPluginIds, importClaudeMem, uninstallClaudeMem } from './claudemem.mjs';
 import { resolveProvider } from './llm.mjs';
 import { drain } from './queue.mjs';
-import { formatIndex, search, stats } from './store.mjs';
+import { formatIndex, redactExisting, search, stats } from './store.mjs';
 
 const HELP = `claude-open-mem ${VERSION}
 Usage: node cli.mjs <command> [options]
@@ -14,6 +14,7 @@ Usage: node cli.mjs <command> [options]
   import [--quiet]               Import new rows from claude-mem (read-only, incremental)
   drain                          Process the pending queue now
   search <query> [--project P]   Search memory from the terminal
+  redact                         Re-scan stored memory and redact secrets
   config                         Show settings
   config set <key> <value>       Change a setting (e.g. provider ollama, model qwen3:8b)
   uninstall-claude-mem [--move-data] [--dry-run] [--yes]
@@ -76,6 +77,8 @@ async function main() {
       const line = r.ok ? `imported from ${r.file}: ${r.results.map((x) => `${x.name} +${x.added}`).join(', ')}` : r.reason;
       log('info', line);
       if (!quiet) console.log(line);
+    } else if (cmd === 'redact') {
+      console.log(`redacted ${redactExisting(db)} rows`);
     } else if (cmd === 'drain') {
       const n = await drain(db, settings);
       log('info', `drain handled ${n} items`);

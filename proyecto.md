@@ -8,4 +8,7 @@
   importador incremental, desinstalación opcional, skill `open-mem`, CLI, README, tests (6/6 OK).
 - Importación real: 16.724 observaciones, 2.819 resúmenes, 3.797 prompts en 2,4 s → `~/.claude-open-mem/open-mem.db`.
 - Ollama local (gemma3:12b / qwen3:14b) probado: JSON correcto, en español tras ajustar prompt.
+- Seguridad: redacción de secretos añadida (7/7 tests); aplicada a la BD real → 75 filas limpiadas, 0 tokens
+  restantes (verificado por regex en filas y en el fichero). La base de claude-mem original sigue teniendo los tokens.
+- Repo interno GitLab privado `noelcheda/claude-open-mem`; GitHub público cuando esté probado al 100 %.
 - Pendiente: publicar en GitHub (repo público), icono 512 px, instalar el plugin aquí y retirar claude-mem.
