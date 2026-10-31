@@ -127,9 +127,23 @@ export function importClaudeMem(db, file = claudeMemDbPath()) {
 }
 
 // --- uninstall -----------------------------------------------------------
-function run(cmd, args) {
-  const res = spawnSync(cmd, args, { encoding: 'utf8', shell: process.platform === 'win32', windowsHide: true });
+function run(cmd, args, cwd) {
+  const res = spawnSync(cmd, args, { encoding: 'utf8', shell: process.platform === 'win32', windowsHide: true, cwd });
   return { ok: res.status === 0, out: `${res.stdout || ''}${res.stderr || ''}`.trim() };
+}
+
+// Every claude-mem install across scopes, from `claude plugin list --json`.
+function claudeMemInstalls() {
+  const r = run('claude', ['plugin', 'list', '--json']);
+  if (r.ok) {
+    try {
+      const parsed = JSON.parse(r.out);
+      const list = Array.isArray(parsed) ? parsed : parsed.plugins || [];
+      return list.filter((p) => String(p.id).startsWith('claude-mem@'))
+        .map((p) => ({ id: p.id, scope: p.scope || 'user', cwd: p.projectPath || undefined }));
+    } catch { /* fall back below */ }
+  }
+  return installedPluginIds().map((id) => ({ id, scope: 'user' }));
 }
 
 function stopWorker(dir) {
@@ -157,12 +171,15 @@ export function uninstallClaudeMem(db, { moveData = false, dryRun = false } = {}
   const dir = claudeMemDataDir();
   const imp = importClaudeMem(db);
   steps.push(imp.ok ? `final import: ${imp.results.map((r) => `${r.name}+${r.added}`).join(', ')}` : `import skipped: ${imp.reason}`);
-  const ids = installedPluginIds();
-  if (!ids.length) steps.push('claude-mem plugin not installed');
-  for (const id of ids) {
-    if (dryRun) { steps.push(`would run: claude plugin uninstall ${id}`); continue; }
-    const r = run('claude', ['plugin', 'uninstall', id]);
-    steps.push(r.ok ? `uninstalled plugin ${id}` : `FAILED to uninstall ${id}: ${r.out}`);
+  const installs = claudeMemInstalls();
+  if (!installs.length) steps.push('claude-mem plugin not installed');
+  for (const { id, scope, cwd } of installs) {
+    // --keep-data preserves the plugin's data folder so a reinstall picks up where it left off.
+    const args = ['plugin', 'uninstall', id, '--scope', scope, '--keep-data'];
+    const where = cwd ? ` (in ${cwd})` : '';
+    if (dryRun) { steps.push(`would run: claude ${args.join(' ')}${where}`); continue; }
+    const r = run('claude', args, cwd);
+    steps.push(r.ok ? `uninstalled ${id} [${scope}]${where}` : `FAILED to uninstall ${id} [${scope}]${where}: ${r.out}`);
   }
   steps.push(dryRun ? 'would stop the claude-mem worker' : stopWorker(dir));
   if (moveData && fs.existsSync(dir)) {
