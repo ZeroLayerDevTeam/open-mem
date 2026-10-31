@@ -22,3 +22,5 @@ suscripción de Claude (ese era el límite de claude-mem: gasta la cuota de 5 h 
   BD importada traía 75 filas con tokens (GitLab, Context7…) — nunca guardar sin pasar por `redactText`.
 - Al escribir regex con `\b` desde Python heredoc se coló un `` (backspace): editar regex con Edit, no con Python.
 - Desinstalar claude-mem nunca borra datos: `--move-data` solo renombra.
+- No usar `.mcp.json` en la raíz del plugin: al abrir Claude Code dentro del repo se carga también como MCP de
+  proyecto, sin `${CLAUDE_PLUGIN_ROOT}`, y falla (`CONNECTION_CLOSED`). El MCP se declara en `plugin.json` → `mcpServers`.
