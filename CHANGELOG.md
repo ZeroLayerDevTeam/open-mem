@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Data folder created owner-only (700).
+- Push progress drawn only on a terminal.
+
 ## 0.2.0
 
 - **Faster session start**: per-project brief written by the local LLM, open tasks, last next steps, most-edited
