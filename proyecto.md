@@ -18,7 +18,7 @@
   `~/.claude-mem/`. Copia extra: `~/.claude-mem-backup-2026-10-31/` (BD con VACUUM INTO, integrity ok, settings,
   installed_plugins, known_marketplaces). Marketplace `thedotmack` se conserva. Launchers npm/LocalAppData se dejan.
   **Revertir**: `claude plugin install claude-mem@thedotmack` (+ `--scope project` desde `C:\Users\Personal`).
-- Pendiente: publicar en GitHub (repo público), icono 512 px, instalar el plugin aquí y retirar claude-mem.
+- Pendiente: publicar en GitHub (repo público) e icono 512 px.
 - v0.1.2: comprobado en sesión real tras reinicio — hooks inyectan contexto, prompt y observaciones capturados,
   MCP `plugin:open-mem` responde. Fallaba un 2.º servidor `open-mem` (el `.mcp.json` del repo cargado como MCP de
   proyecto) → MCP movido a `plugin.json`.
