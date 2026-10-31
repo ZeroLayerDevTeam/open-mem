@@ -95,6 +95,32 @@ test('queue drain without LLM keeps edits, skips reads, writes a turn summary', 
   db.close();
 });
 
+test('queue waits for an LLM that is temporarily down instead of dropping reads', async () => {
+  const db = openDb();
+  db.prepare("DELETE FROM queue").run();
+  const settings = { ...DEFAULT_SETTINGS, provider: 'ollama', llmWaitHours: 72 };
+  const down = { kind: 'none', unreachable: true, reason: 'Ollama not reachable' };
+  const n = store.addPrompt(db, { sessionId: 's2', project: 'delta', cwd: '/x/delta', text: 'mira el log' });
+  enqueue(db, 'observation', 's2', 'delta', { tool: 'Read', input: { file_path: '/x/log.txt' }, output: 'error', prompt_number: n });
+
+  // Never seen an LLM: the no-LLM path runs right away (fresh installs without Ollama).
+  db.prepare("DELETE FROM meta WHERE key = 'llm_seen_at'").run();
+  assert.equal(await drain(db, settings, { lock: false, provider: down, sync: false }), 1);
+
+  enqueue(db, 'observation', 's2', 'delta', { tool: 'Read', input: { file_path: '/x/log2.txt' }, output: 'error', prompt_number: n });
+  await drain(db, settings, { lock: false, provider: { kind: 'ollama', model: 'x', baseUrl: 'http://127.0.0.1:9' }, sync: false });
+  // LLM seen once, now down: the item stays queued.
+  db.prepare("UPDATE queue SET status = 'pending', attempts = 0").run();
+  assert.equal(await drain(db, settings, { lock: false, provider: down, sync: false }), 0);
+  assert.equal(db.prepare("SELECT count(*) n FROM queue WHERE status = 'pending'").get().n, 1);
+
+  // Past the wait window it is stored without the LLM.
+  db.prepare('UPDATE queue SET created_at = ?').run(Date.now() - 73 * 3600000);
+  assert.equal(await drain(db, settings, { lock: false, provider: down, sync: false }), 1);
+  assert.equal(db.prepare('SELECT count(*) n FROM queue').get().n, 0);
+  db.close();
+});
+
 test('llm helpers', () => {
   assert.deepEqual(parseJsonReply('<think>hmm {x}</think>```json\n{"skip": true}\n```'), { skip: true });
   assert.equal(pickOllamaModel(['nomic-embed-text', 'qwen3:14b', 'gemma3:12b'], ''), 'gemma3:12b');

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.3
+
+- No data loss while the LLM is down: once an LLM has been seen, queue items wait for it (`llmWaitHours`, default
+  72) instead of going through the no-LLM path, which drops reads and searches.
+- An item the LLM keeps failing on is stored without the LLM instead of being marked failed.
+- Shared mode: a 502/503 from the server (restarting behind a proxy) falls back to the local database like a network
+  error, so notes and tasks written meanwhile are pushed later instead of failing.
+
 ## 0.2.2
 
 - Login rate limit keyed on the real client behind a reverse proxy (X-Real-IP / X-Forwarded-For, trusted only from

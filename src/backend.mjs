@@ -9,6 +9,10 @@ import { remoteFetch } from './sync.mjs';
 export const isNetworkError = (err) => err?.name === 'TimeoutError' || err?.name === 'AbortError'
   || /fetch failed|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ECONNRESET|ETIMEDOUT/i.test(`${err?.message} ${err?.cause?.code || ''}`);
 
+// The server is down or restarting behind a proxy: same as unreachable, the request never ran.
+// (Not 504: the request may have run, and a local fallback would duplicate an added item.)
+const isUnavailable = (err) => isNetworkError(err) || [502, 503].includes(err?.status);
+
 // Plain functions shared by the server routes and local mode.
 export const local = {
   search: (db, o) => search(db, o),
@@ -41,7 +45,7 @@ export async function call(op, args, { db, settings }) {
       const data = await remoteFetch(settings, method, route, withDevice);
       return { result: data.result, remote: true };
     } catch (err) {
-      if (!isNetworkError(err)) throw err;
+      if (!isUnavailable(err)) throw err;
       log('warn', `server unreachable for ${op}, using local database: ${err.message}`);
       return { result: local[op](db(), withDevice, settings), remote: false, fallback: true };
     }

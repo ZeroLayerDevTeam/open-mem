@@ -46,7 +46,7 @@ export async function resolveProvider(settings) {
     if (model) return { kind: 'ollama', model, baseUrl };
     return { kind: 'none', reason: `Ollama at ${baseUrl} has no chat model (run: ollama pull qwen3:8b)` };
   } catch (err) {
-    return { kind: 'none', reason: `Ollama not reachable at ${baseUrl} (${err.message})` };
+    return { kind: 'none', unreachable: true, reason: `Ollama not reachable at ${baseUrl} (${err.message})` };
   }
 }
 

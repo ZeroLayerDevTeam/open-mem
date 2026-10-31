@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export const VERSION = '0.2.2';
+export const VERSION = '0.2.3';
 
 export const DEFAULT_SETTINGS = {
   // auto: use a local Ollama if reachable, otherwise store without an LLM.
@@ -13,6 +13,9 @@ export const DEFAULT_SETTINGS = {
   baseUrl: '',
   apiKey: '',
   llmTimeoutMs: 120000,
+  // Once an LLM has been seen, a queue item waits this long for it to come back before it is stored
+  // without one (the no-LLM path keeps only edits and commands).
+  llmWaitHours: 72,
   // Tools whose calls are never recorded.
   skipTools: ['TodoWrite', 'AskUserQuestion', 'ListMcpResourcesTool', 'Skill', 'ToolSearch', 'SlashCommand'],
   maxToolChars: 6000,

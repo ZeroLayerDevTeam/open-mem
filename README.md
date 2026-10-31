@@ -157,6 +157,7 @@ claude-open-mem never deletes claude-mem data.
 | `mode` / `serverUrl` / `deviceName` | `local` | Shared mode (set with `remote connect`) |
 | `webHost` / `webPort` / `webAutostart` | `127.0.0.1` / 37800 / `true` | Web viewer |
 | `maxToolChars` | 6000 | Tool output sent to the LLM |
+| `llmWaitHours` | 72 | How long queued calls wait for an LLM that is down before being stored without it |
 
 Set `CLAUDE_OPEN_MEM_DATA_DIR` to move the data folder.
 

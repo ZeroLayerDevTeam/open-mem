@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -191,6 +192,18 @@ test('shared mode: client pushes to server, reads remotely, falls back locally',
   const down = await call('search', { query: 'compartido' }, { db: () => cdb, settings });
   assert.equal(down.fallback, true);
   assert.ok(down.result.length >= 1, 'local copy still answers');
+
+  // A proxy answering 503 (server restarting) also falls back: a task added meanwhile is kept locally.
+  const proxy = http.createServer((q, r) => { r.writeHead(503); r.end('{"error":"down"}'); });
+  await new Promise((ok) => proxy.listen(0, '127.0.0.1', ok));
+  try {
+    const at = { ...settings, serverUrl: `http://127.0.0.1:${proxy.address().port}` };
+    const added = await call('itemAdd', { kind: 'task', title: 'hecho con el servidor caído' }, { db: () => cdb, settings: at });
+    assert.equal(added.fallback, true);
+    assert.ok(cdb.prepare('SELECT 1 FROM items WHERE id = ? AND synced_at IS NULL').get(added.result.id), 'queued for the next push');
+  } finally {
+    proxy.close();
+  }
   cdb.close();
   sdb.close();
 });

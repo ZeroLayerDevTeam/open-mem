@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dataPath, log } from './config.mjs';
-import { transaction } from './db.mjs';
+import { getMeta, setMeta, transaction } from './db.mjs';
 import { isNetworkError } from './backend.mjs';
 import { listItems } from './items.mjs';
 import { BRIEF_SYSTEM, completeJson, resolveProvider, OBSERVATION_SYSTEM, SUMMARY_SYSTEM } from './llm.mjs';
@@ -16,6 +16,7 @@ import { pushPending } from './sync.mjs';
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cli.mjs');
 const STALE_CLAIM_MS = 10 * 60 * 1000;
 const MAX_ATTEMPTS = 3;
+const NO_LLM = { kind: 'none' };
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
 export function enqueue(db, kind, sessionId, project, payload) {
@@ -23,10 +24,12 @@ export function enqueue(db, kind, sessionId, project, payload) {
     .run(kind, sessionId, project, JSON.stringify(redact(payload)), Date.now());
 }
 
-function claim(db) {
+// `createdBefore`: only items queued before this time (used while waiting for the LLM to come back).
+function claim(db, createdBefore = Number.MAX_SAFE_INTEGER) {
   return transaction(db, () => {
-    const row = db.prepare(`SELECT * FROM queue WHERE status = 'pending'
-        OR (status = 'processing' AND claimed_at < ?) ORDER BY id LIMIT 1`).get(Date.now() - STALE_CLAIM_MS);
+    const row = db.prepare(`SELECT * FROM queue WHERE (status = 'pending'
+        OR (status = 'processing' AND claimed_at < ?)) AND created_at < ? ORDER BY id LIMIT 1`)
+      .get(Date.now() - STALE_CLAIM_MS, createdBefore);
     if (!row) return null;
     db.prepare("UPDATE queue SET status = 'processing', claimed_at = ?, attempts = attempts + 1 WHERE id = ?")
       .run(Date.now(), row.id);
@@ -229,12 +232,21 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
   const touched = new Set();
   try {
     const provider = forced || await resolveProvider(settings);
-    if (provider.kind === 'none' && provider.reason) log('info', `drain without LLM: ${provider.reason}`);
-    for (let item = claim(db); item; item = claim(db)) {
+    if (provider.kind !== 'none') setMeta(db, 'llm_seen_at', Date.now());
+    // An LLM that worked before and is unreachable now is treated as temporarily down: items wait for
+    // it (up to llmWaitHours) instead of going through the lossy no-LLM path.
+    const waiting = provider.kind === 'none' && provider.unreachable && Boolean(getMeta(db, 'llm_seen_at'));
+    const cutoff = waiting ? Date.now() - settings.llmWaitHours * 3600000 : undefined;
+    if (waiting) {
+      const n = db.prepare("SELECT count(*) n FROM queue WHERE status IN ('pending', 'processing')").get().n;
+      if (n) log('warn', `LLM unreachable, holding ${n} queue item(s) until it is back: ${provider.reason}`);
+    } else if (provider.kind === 'none' && provider.reason) log('info', `drain without LLM: ${provider.reason}`);
+    for (let item = claim(db, cutoff); item; item = claim(db, cutoff)) {
       touched.add(item.project);
+      const run = (p) => (item.kind === 'observation' ? processObservation(db, item, p, settings)
+        : item.kind === 'summary' ? processSummary(db, item, p, settings) : null);
       try {
-        if (item.kind === 'observation') await processObservation(db, item, provider, settings);
-        else if (item.kind === 'summary') await processSummary(db, item, provider, settings);
+        await run(provider);
         db.prepare('DELETE FROM queue WHERE id = ?').run(item.id);
         handled++;
       } catch (err) {
@@ -244,9 +256,19 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
           log('warn', `drain paused, provider unreachable: ${err.message}`);
           break;
         }
-        const status = item.attempts >= MAX_ATTEMPTS ? 'failed' : 'pending';
-        db.prepare('UPDATE queue SET status = ?, error = ? WHERE id = ?').run(status, String(err.message).slice(0, 500), item.id);
         log('warn', `queue item ${item.id} (${item.kind}) attempt ${item.attempts}: ${err.message}`);
+        if (item.attempts < MAX_ATTEMPTS) {
+          db.prepare("UPDATE queue SET status = 'pending', error = ? WHERE id = ?").run(String(err.message).slice(0, 500), item.id);
+          continue;
+        }
+        // The LLM keeps failing on this item (bad JSON, too long…): store it without the LLM rather than lose it.
+        try {
+          await run(NO_LLM);
+          db.prepare('DELETE FROM queue WHERE id = ?').run(item.id);
+          handled++;
+        } catch (err2) {
+          db.prepare("UPDATE queue SET status = 'failed', error = ? WHERE id = ?").run(String(err2.message).slice(0, 500), item.id);
+        }
       }
     }
     await refreshBriefs(db, touched, provider, settings);
