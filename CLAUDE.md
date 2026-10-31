@@ -20,7 +20,7 @@ suscripción de Claude (ese era el límite de claude-mem: gasta la cuota de 5 h 
 - qwen3:14b no descarta llamadas triviales; gemma3:12b sí y es más rápido (~4-7 s en RTX 4060 Ti) → preferido en `auto`.
 - Redacción de secretos (`src/redact.mjs`) en enqueue + insert + prompts; `cli redact` re-escanea la BD. La
   BD importada traía 75 filas con tokens (GitLab, Context7…) — nunca guardar sin pasar por `redactText`.
-- Al escribir regex con `\b` desde Python heredoc se coló un carácter backspace (0x08) (backspace): editar regex con Edit, no con Python.
+- Al escribir regex con `\b` desde Python heredoc se coló un carácter backspace (0x08): editar regex con Edit, no con Python.
 - Desinstalar claude-mem nunca borra datos: `--move-data` solo renombra.
 - No usar `.mcp.json` en la raíz del plugin: al abrir Claude Code dentro del repo se carga también como MCP de
   proyecto, sin `${CLAUDE_PLUGIN_ROOT}`, y falla (`CONNECTION_CLOSED`). El MCP se declara en `plugin.json` → `mcpServers`.
