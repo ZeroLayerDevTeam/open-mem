@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export const VERSION = '0.1.2';
+export const VERSION = '0.2.0';
 
 export const DEFAULT_SETTINGS = {
   // auto: use a local Ollama if reachable, otherwise store without an LLM.
@@ -16,11 +16,27 @@ export const DEFAULT_SETTINGS = {
   // Tools whose calls are never recorded.
   skipTools: ['TodoWrite', 'AskUserQuestion', 'ListMcpResourcesTool', 'Skill', 'ToolSearch', 'SlashCommand'],
   maxToolChars: 6000,
-  contextObservations: 30,
-  contextSummaries: 5,
+  contextObservations: 12,
+  contextSummaries: 3,
+  contextTasks: 10,
+  // Inject memory matching each prompt (FTS only, no LLM).
+  recallOnPrompt: true,
+  recallLimit: 5,
+  // Regenerate a project's brief after this many new records.
+  briefEvery: 25,
   excludedProjects: [],
   // Import new rows from an existing claude-mem database at session start.
   autoImportClaudeMem: true,
+  // local: this machine's database. remote: a shared open-mem server (see `cli remote connect`).
+  mode: 'local',
+  serverUrl: '',
+  deviceKey: '',
+  remoteTimeoutMs: 2500,
+  deviceName: '',
+  // Web viewer (`cli serve`). Local mode starts it automatically on 127.0.0.1.
+  webHost: '127.0.0.1',
+  webPort: 37800,
+  webAutostart: true,
 };
 
 export function dataDir() {
@@ -49,9 +65,16 @@ export function loadSettings() {
   return settings;
 }
 
+// settings.json can hold a device key: keep it private to the user.
 export function saveSettings(settings) {
   ensureDataDir();
-  fs.writeFileSync(dataPath('settings.json'), JSON.stringify(settings, null, 2) + '\n');
+  const file = dataPath('settings.json');
+  fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
+  try { fs.chmodSync(file, 0o600); } catch { /* not supported on every filesystem */ }
+}
+
+export function deviceName(settings) {
+  return settings?.deviceName || os.hostname();
 }
 
 export function projectFromCwd(cwd) {

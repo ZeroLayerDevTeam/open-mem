@@ -1,11 +1,14 @@
 ---
 name: open-mem
-description: Manage claude-open-mem memory - status, import from claude-mem, LLM provider settings, terminal search, and optional claude-mem uninstall. Use when the user asks about their memory setup, wants to import or migrate from claude-mem, change the compression model, or remove claude-mem.
+description: Manage claude-open-mem memory - status, web viewer and admin token, shared server and device keys, import from claude-mem, LLM provider settings, project briefs, terminal search, and optional claude-mem uninstall. Use when the user asks about their memory setup, the memory web page, sharing memory between machines, migrating from claude-mem, changing the compression model, or removing claude-mem.
 ---
 
 # claude-open-mem administration
 
-Searching memory inside a session uses the `open-mem` MCP tools (`search` → `timeline` → `get_observations`), not this skill.
+Inside a session, memory is used through the `open-mem` MCP tools, not this skill:
+`search` → `timeline` → `get_observations` to recall; `task_add` / `task_update` / `items_list` for durable to-dos;
+`note_add` for decisions and conventions; `project_context` for another project's brief.
+
 This skill covers the CLI. Run it with Bash:
 
 ```bash
@@ -19,26 +22,32 @@ node --no-warnings "$OM" status
 
 | Goal | Command |
 |---|---|
-| Counts, active LLM, claude-mem detection | `node --no-warnings "$OM" status` |
-| Import claude-mem history (read-only, incremental, safe to repeat) | `node --no-warnings "$OM" import` |
+| Counts, LLM, mode, claude-mem detection | `node --no-warnings "$OM" status` |
+| Import claude-mem history (read-only, incremental) | `node --no-warnings "$OM" import` |
 | Process pending queue now | `node --no-warnings "$OM" drain` |
-| Show settings | `node --no-warnings "$OM" config` |
-| Change a setting | `node --no-warnings "$OM" config set <key> <value>` |
-| Preview claude-mem removal | `node --no-warnings "$OM" uninstall-claude-mem --dry-run` |
-| Remove claude-mem plugin | `node --no-warnings "$OM" uninstall-claude-mem --yes [--move-data]` |
+| Rewrite a project brief now | `node --no-warnings "$OM" brief <project>` |
+| Show / change settings | `node --no-warnings "$OM" config [set <key> <value>]` |
+| Run the web viewer | `node --no-warnings "$OM" serve [--host H] [--port P]` |
+| Shared mode: client → server | `node --no-warnings "$OM" remote connect --url URL --name NAME < keyfile` |
+| Push unsynced records now | `node --no-warnings "$OM" sync` |
+| Server: device keys | `node --no-warnings "$OM" device add|list|remove <name>` |
+| Preview / remove claude-mem | `node --no-warnings "$OM" uninstall-claude-mem --dry-run` / `--yes [--move-data]` |
+
+## Secrets: never put them in the conversation
+
+- The web admin token is shown once, to the user, at install. Never ask the user to paste it into chat.
+  If it is lost, the user runs `token reset` themselves (suggest `! node "$OM" token reset` so it runs in their terminal);
+  the new token is printed once and every browser is logged out.
+- Device keys: pipe `device add <name> --raw` straight into `remote connect` (over SSH if needed) so the key never
+  appears in the transcript. Never echo it.
 
 ## LLM provider (compression)
 
-claude-open-mem never spends the user's Claude plan. Options for `provider`:
-
-- `auto` (default): local Ollama at `http://127.0.0.1:11434` if it has a chat model, else `none`.
-- `ollama`: same, with an explicit `model` / `baseUrl`.
-- `openai`: any OpenAI-compatible endpoint — set `baseUrl` (e.g. `http://localhost:1234/v1` for LM Studio), `model`, `apiKey`.
-- `none`: no LLM; only edits and shell commands are stored, as raw notes.
+claude-open-mem never spends the user's Claude plan. `provider`: `auto` (local Ollama if it has a chat model, else
+`none`), `ollama`, `openai` (any OpenAI-compatible `baseUrl` + `model` + `apiKey`), or `none` (only edits and shell
+commands stored raw; no project briefs).
 
 ## Uninstalling claude-mem
 
 Always run `--dry-run` first and show the user the output. Run the real command only after the user confirms in chat.
-It does a final import, runs `claude plugin uninstall claude-mem@…`, and stops the claude-mem worker.
-claude-mem data is never deleted: `--move-data` only renames `~/.claude-mem` to `~/.claude-mem.removed-<date>`.
-Tell the user to restart Claude Code afterwards.
+claude-mem data is never deleted: `--move-data` only renames `~/.claude-mem`. Tell the user to restart Claude Code afterwards.

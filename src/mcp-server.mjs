@@ -1,27 +1,32 @@
 // Minimal MCP server over stdio (newline-delimited JSON-RPC 2.0). No dependencies.
 import readline from 'node:readline';
-import { log, projectFromCwd, VERSION } from './config.mjs';
+import { deviceName, loadSettings, log, projectFromCwd, VERSION } from './config.mjs';
 import { openDb } from './db.mjs';
-import { formatFull, formatIndex, getByRefs, insertObservation, search, timeline } from './store.mjs';
+import { call } from './backend.mjs';
+import { formatItems } from './items.mjs';
+import { formatFull, formatIndex } from './store.mjs';
 
-const INSTRUCTIONS = `claude-open-mem: persistent memory across Claude Code sessions.
-Workflow: search(query) for a compact index -> timeline(anchor) for what happened around a hit ->
-get_observations(ids) only for the records you need. Ids are numbers for observations and S<n> for session summaries.
-Project = the folder name of the working directory. Use save_memory for decisions, corrections or lessons worth keeping.`;
+const INSTRUCTIONS = `claude-open-mem: persistent memory across Claude Code sessions (shared across the user's machines).
+Recall: search(query) -> timeline(anchor) -> get_observations(ids), fetching only what you need.
+Ids: numbers = observations, S<n> = session summaries, I<n> = notes and tasks.
+Durable work tracking: task_add / task_update (todo -> doing -> done) instead of TodoWrite for anything that
+must survive this session; note_add for decisions, conventions, gotchas and user preferences.
+Notes and tasks default to the current project (folder name) and directory.`;
 
+const str = (description, extra = {}) => ({ type: 'string', description, ...extra });
 const TOOLS = [
   {
     name: 'search',
-    description: 'Full-text search over past observations and session summaries. Returns a compact index (id · date · project · type · title). Empty query lists the most recent.',
+    description: 'Full-text search over observations, session summaries, notes and tasks. Returns a compact index (id · date · project · type · title). Empty query lists the most recent.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Words to search for (prefix matching; all words first, any word as fallback)' },
-        project: { type: 'string', description: 'Limit to a project (folder name). Omit for all projects.' },
-        type: { type: 'string', description: 'Observation type: discovery, decision, bugfix, feature, refactor, change, note' },
-        kind: { type: 'string', enum: ['all', 'observations', 'summaries'] },
-        dateStart: { type: 'string', description: 'ISO date, e.g. 2026-10-01' },
-        dateEnd: { type: 'string', description: 'ISO date, inclusive' },
+        query: str('Words to search for (prefix matching; all words first, any word as fallback)'),
+        project: str('Limit to a project (folder name). Omit for all projects.'),
+        type: str('Observation type (discovery, decision, bugfix, feature, refactor, change) or note / task'),
+        kind: { type: 'string', enum: ['all', 'observations', 'summaries', 'notes', 'tasks'] },
+        dateStart: str('ISO date, e.g. 2026-10-01'),
+        dateEnd: str('ISO date, inclusive'),
         limit: { type: 'number', description: 'Default 20, max 100' },
         offset: { type: 'number' },
       },
@@ -33,7 +38,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        anchor: { type: 'string', description: 'Observation id (e.g. "123") or summary id (e.g. "S45")' },
+        anchor: str('Observation id (e.g. "123") or summary id (e.g. "S45")'),
         before: { type: 'number', description: 'Default 5' },
         after: { type: 'number', description: 'Default 5' },
       },
@@ -42,55 +47,139 @@ const TOOLS = [
   },
   {
     name: 'get_observations',
-    description: 'Full details of selected records (max 50). Fetch only ids chosen from search or timeline.',
+    description: 'Full details of selected records (max 50): observations, S<n> summaries or I<n> notes/tasks with their history.',
+    inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: ['string', 'number'] } } }, required: ['ids'] },
+  },
+  {
+    name: 'project_context',
+    description: 'The start-of-session brief for a project: summary, open tasks, recent sessions, hot files, notes. Use it when switching to another project.',
+    inputSchema: { type: 'object', properties: { project: str('Project (folder name). Defaults to the current one.') } },
+  },
+  {
+    name: 'note_add',
+    description: 'Save a durable note: a decision, convention, gotcha, user preference or handoff. Prefer short, specific notes.',
     inputSchema: {
       type: 'object',
-      properties: { ids: { type: 'array', items: { type: ['string', 'number'] } } },
-      required: ['ids'],
+      properties: {
+        title: str('One line'),
+        body: str('Details (markdown)'),
+        project: str('Defaults to the current project'),
+        directory: str('Defaults to the current working directory'),
+        tags: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'task_add',
+    description: 'Create a durable task/to-do that survives this session and is visible on every machine and in the web viewer.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: str('What needs doing, as an action'),
+        body: str('Details, acceptance criteria, links'),
+        status: { type: 'string', enum: ['todo', 'doing', 'blocked'], description: 'Default todo' },
+        priority: { type: 'number', enum: [1, 2, 3], description: '1 high, 2 normal (default), 3 low' },
+        due: str('ISO date'),
+        project: str('Defaults to the current project'),
+        directory: str('Defaults to the current working directory'),
+        tags: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'task_update',
+    description: 'Update a note or task by id (I<n>): change status (todo, doing, blocked, done, cancelled; notes: active, archived), edit fields, or add a progress comment.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: str('I<n> or n'),
+        status: str('New status'),
+        comment: str('Progress note recorded in the history'),
+        title: str('New title'),
+        body: str('New body'),
+        priority: { type: 'number', enum: [1, 2, 3] },
+        due: str('ISO date, or empty to clear'),
+        tags: { type: 'array', items: { type: 'string' } },
+        project: str('Move to another project'),
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'items_list',
+    description: 'List notes and/or tasks, open ones first.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['note', 'task'] },
+        project: str('Defaults to the current project; "*" for all'),
+        status: str('Exact status filter'),
+        open: { type: 'boolean', description: 'Only open tasks / active notes' },
+        limit: { type: 'number' },
+      },
     },
   },
   {
     name: 'save_memory',
-    description: 'Save an explicit note (decision, correction, lesson, handoff) to memory.',
+    description: 'Alias of note_add kept for compatibility: save an explicit note.',
     inputSchema: {
       type: 'object',
-      properties: {
-        text: { type: 'string' },
-        title: { type: 'string' },
-        project: { type: 'string', description: 'Defaults to the current folder name' },
-      },
+      properties: { text: str('The note'), title: str('One line'), project: str('Defaults to the current project') },
       required: ['text'],
     },
   },
 ];
 
 let db;
-const getDb = () => (db ??= openDb());
+const settings = loadSettings();
+const ctx = { db: () => (db ??= openDb()), settings };
+const here = () => ({ project: projectFromCwd(process.cwd()), directory: process.cwd() });
+const idOf = (v) => {
+  const n = Number(String(v ?? '').trim().replace(/^i/i, ''));
+  if (!Number.isInteger(n) || n <= 0) throw new Error(`Invalid id "${v}" (expected I<n>)`);
+  return n;
+};
+const where = (r) => (r.fallback ? ' (server unreachable: saved locally, it will sync later)' : '');
 
-function callTool(name, a = {}) {
+async function callTool(name, a = {}) {
   switch (name) {
     case 'search':
-      return formatIndex(search(getDb(), a));
+      return formatIndex((await call('search', a, ctx)).result);
     case 'timeline': {
-      const rows = timeline(getDb(), a.anchor, Math.min(a.before ?? 5, 50), Math.min(a.after ?? 5, 50));
-      return rows ? formatIndex(rows) : `Anchor ${a.anchor} not found.`;
+      const { result } = await call('timeline', { anchor: a.anchor, before: Math.min(a.before ?? 5, 50), after: Math.min(a.after ?? 5, 50) }, ctx);
+      return result ? formatIndex(result) : `Anchor ${a.anchor} not found.`;
     }
     case 'get_observations':
-      return formatFull(getByRefs(getDb(), Array.isArray(a.ids) ? a.ids : [a.ids]));
-    case 'save_memory': {
-      if (!a.text?.trim()) throw new Error('text is required');
-      const project = a.project || projectFromCwd(process.cwd());
-      const id = insertObservation(getDb(), {
-        project, type: 'note', title: a.title || a.text.slice(0, 80), narrative: a.text, tool: 'save_memory', created_at: Date.now(),
-      });
-      return `Saved as ${id} in project "${project}".`;
+      return formatFull((await call('get', { ids: (Array.isArray(a.ids) ? a.ids : [a.ids]).map(String) }, ctx)).result);
+    case 'project_context':
+      return (await call('context', { project: a.project || here().project }, ctx)).result.text;
+    case 'save_memory':
+    case 'note_add': {
+      const title = a.title || (a.text ? a.text.split('\n')[0].slice(0, 120) : '');
+      const r = await call('itemAdd', { kind: 'note', ...here(), ...a, title, body: a.body ?? a.text ?? null }, ctx);
+      return `Saved note I${r.result.id} in project "${a.project || here().project}"${where(r)}.`;
+    }
+    case 'task_add': {
+      const r = await call('itemAdd', { kind: 'task', ...here(), ...a }, ctx);
+      return `Created task I${r.result.id} [${a.status || 'todo'}] in project "${a.project || here().project}"${where(r)}.`;
+    }
+    case 'task_update': {
+      const { id, ...patch } = a;
+      const r = await call('itemUpdate', { id: idOf(id), patch }, ctx);
+      return `Updated I${r.result.id} → [${r.result.status}] ${r.result.title}${where(r)}.`;
+    }
+    case 'items_list': {
+      const project = a.project === '*' ? undefined : a.project || here().project;
+      return formatItems((await call('itemsList', { ...a, project }, ctx)).result);
     }
     default:
       throw Object.assign(new Error(`Unknown tool ${name}`), { code: -32602 });
   }
 }
 
-function handle(msg) {
+async function handle(msg) {
   const { id, method, params } = msg;
   switch (method) {
     case 'initialize':
@@ -106,10 +195,10 @@ function handle(msg) {
       return { tools: TOOLS };
     case 'tools/call':
       try {
-        return { content: [{ type: 'text', text: callTool(params?.name, params?.arguments) }] };
+        return { content: [{ type: 'text', text: await callTool(params?.name, params?.arguments) }] };
       } catch (err) {
         if (err.code === -32602) throw err;
-        log('warn', `mcp tool ${params?.name}: ${err.message}`);
+        log('warn', `mcp tool ${params?.name} on ${deviceName(settings)}: ${err.message}`);
         return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
       }
     default:
@@ -119,6 +208,7 @@ function handle(msg) {
 }
 
 const send = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`);
+const pending = new Set();
 
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if (!line.trim()) return;
@@ -128,13 +218,13 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   } catch {
     return send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
   }
-  try {
-    const result = handle(msg);
-    if (msg.id !== undefined && result !== undefined) send({ jsonrpc: '2.0', id: msg.id, result });
-  } catch (err) {
-    if (msg.id !== undefined) send({ jsonrpc: '2.0', id: msg.id, error: { code: err.code || -32603, message: err.message } });
-  }
-}).on('close', () => {
+  const p = handle(msg).then(
+    (result) => { if (msg.id !== undefined && result !== undefined) send({ jsonrpc: '2.0', id: msg.id, result }); },
+    (err) => { if (msg.id !== undefined) send({ jsonrpc: '2.0', id: msg.id, error: { code: err.code || -32603, message: err.message } }); },
+  ).finally(() => pending.delete(p));
+  pending.add(p);
+}).on('close', async () => {
+  await Promise.allSettled([...pending]);
   db?.close();
   process.exit(0);
 });

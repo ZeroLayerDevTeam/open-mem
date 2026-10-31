@@ -3,3 +3,6 @@ node_modules/
 *.db-wal
 *.db-shm
 .claude/settings.local.json
+proyecto.md
+DEPLOY.local.md
+*.local.md

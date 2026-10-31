@@ -18,7 +18,7 @@ const store = await import('../src/store.mjs');
 const { enqueue, drain } = await import('../src/queue.mjs');
 const { parseJsonReply, pickOllamaModel } = await import('../src/llm.mjs');
 
-saveSettings({ ...DEFAULT_SETTINGS, provider: 'none', autoImportClaudeMem: false });
+saveSettings({ ...DEFAULT_SETTINGS, provider: 'none', autoImportClaudeMem: false, webAutostart: false });
 
 function fakeClaudeMem(file) {
   const src = new DatabaseSync(file);
@@ -91,7 +91,7 @@ test('queue drain without LLM keeps edits, skips reads, writes a turn summary', 
   assert.equal(obs[0].files_modified, JSON.stringify(['/x/app.conf']));
   const sum = db.prepare("SELECT * FROM summaries WHERE project = 'gamma'").get();
   assert.match(sum.completed, /app\.conf/);
-  assert.match(store.contextFor(db, 'gamma', DEFAULT_SETTINGS), /Edit: \/x\/app\.conf/);
+  assert.match(store.contextFor(db, 'gamma', DEFAULT_SETTINGS).text, /Edit: \/x\/app\.conf/);
   db.close();
 });
 
@@ -108,7 +108,8 @@ function rpc(lines) {
     let out = '';
     child.stdout.on('data', (d) => { out += d; });
     child.on('error', reject);
-    child.on('close', () => resolve(out.trim().split('\n').map((l) => JSON.parse(l))));
+    // Tool calls are async, so replies may arrive out of order.
+    child.on('close', () => resolve(out.trim().split('\n').map((l) => JSON.parse(l)).sort((a, b) => a.id - b.id)));
     for (const l of lines) child.stdin.write(`${JSON.stringify(l)}\n`);
     child.stdin.end();
   });
@@ -125,9 +126,9 @@ test('mcp server speaks JSON-RPC', async () => {
   ]);
   assert.equal(res.length, 5);
   assert.equal(res[0].result.serverInfo.name, 'claude-open-mem');
-  assert.deepEqual(res[1].result.tools.map((t) => t.name), ['search', 'timeline', 'get_observations', 'save_memory']);
+  assert.deepEqual(res[1].result.tools.map((t) => t.name), ['search', 'timeline', 'get_observations', 'project_context', 'note_add', 'task_add', 'task_update', 'items_list', 'save_memory']);
   assert.match(res[2].result.content[0].text, /nginx/);
-  assert.match(res[3].result.content[0].text, /Saved as \d+/);
+  assert.match(res[3].result.content[0].text, /Saved note I\d+/);
   assert.equal(res[4].error.code, -32601);
 });
 
@@ -147,6 +148,13 @@ test('hooks record prompt and tool calls, session start injects context', () => 
   const start = hook('session-start', { session_id: 'h2', cwd: path.join(TMP, 'alpha') });
   const out = JSON.parse(start.stdout);
   assert.match(out.hookSpecificOutput.additionalContext, /Configuración del proxy nginx/);
+  assert.match(out.systemMessage, /Admin token \(shown only this once/);
+  assert.match(out.systemMessage, /om_admin_[\w-]{40,}/);
+  const again = JSON.parse(hook('session-start', { session_id: 'h3', cwd: path.join(TMP, 'alpha') }).stdout);
+  assert.equal(again.systemMessage, undefined, 'token printed only once');
+  const db2 = openDb();
+  assert.match(db2.prepare("SELECT git_branch, device FROM sessions WHERE session_id = 'h2'").get().device, /\S/);
+  db2.close();
 });
 
 test('redaction removes secrets but keeps ordinary code', async () => {

@@ -5,9 +5,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dataPath, log } from './config.mjs';
 import { transaction } from './db.mjs';
-import { completeJson, resolveProvider, OBSERVATION_SYSTEM, SUMMARY_SYSTEM } from './llm.mjs';
+import { isNetworkError } from './backend.mjs';
+import { listItems } from './items.mjs';
+import { BRIEF_SYSTEM, completeJson, resolveProvider, OBSERVATION_SYSTEM, SUMMARY_SYSTEM } from './llm.mjs';
+import { sessionMeta } from './meta.mjs';
 import { redact } from './redact.mjs';
-import { insertObservation, promptText, turnObservations, upsertSummary } from './store.mjs';
+import { clip as clipLine, insertObservation, promptText, sessionInfo, turnObservations, upsertSummary } from './store.mjs';
+import { pushPending } from './sync.mjs';
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cli.mjs');
 const STALE_CLAIM_MS = 10 * 60 * 1000;
@@ -112,10 +116,13 @@ async function processObservation(db, item, provider, settings) {
   }
   if (!obs) return;
   insertObservation(db, {
+    ...sessionMeta(sessionInfo(db, item.session_id), settings),
     session_id: item.session_id, project: item.project, prompt_number: p.prompt_number, tool: p.tool,
     type: obs.type, title: obs.title, subtitle: obs.subtitle, narrative: obs.narrative,
     facts: obs.facts, concepts: obs.concepts,
     files_read: files.read, files_modified: files.modified, created_at: p.at || item.created_at,
+    model: provider.model || null,
+    metadata: { tool_use_id: p.tool_use_id || null, compressed: provider.kind !== 'none' },
   });
 }
 
@@ -141,9 +148,10 @@ async function processSummary(db, item, provider, settings) {
   const request = promptText(db, item.session_id, p.prompt_number);
   const obs = turnObservations(db, item.session_id, p.prompt_number);
   if (!request && !obs.length) return;
+  const filesOfTurn = (col) => [...new Set(obs.flatMap((o) => { try { return JSON.parse(o[col] || '[]'); } catch { return []; } }))];
+  const changed = filesOfTurn('files_modified');
   let sum;
   if (provider.kind === 'none') {
-    const changed = [...new Set(obs.flatMap((o) => { try { return JSON.parse(o.files_modified || '[]'); } catch { return []; } }))];
     if (!obs.length) return;
     sum = { request: clip(request, 500), completed: changed.length ? `Modified: ${changed.join(', ')}` : obs.map((o) => o.title).join('; ') };
   } else {
@@ -156,6 +164,9 @@ async function processSummary(db, item, provider, settings) {
   }
   const field = (v) => (Array.isArray(v) ? v.join('\n') : v);
   upsertSummary(db, {
+    ...sessionMeta(sessionInfo(db, item.session_id), settings),
+    files_read: filesOfTurn('files_read'), files_modified: changed, model: provider.model || null,
+    metadata: { observations: obs.map((o) => o.id) },
     session_id: item.session_id, project: item.project, prompt_number: p.prompt_number,
     request: field(sum.request) || clip(request, 500), investigated: field(sum.investigated), learned: field(sum.learned),
     completed: field(sum.completed), next_steps: field(sum.next_steps), notes: field(sum.notes),
@@ -163,17 +174,64 @@ async function processSummary(db, item, provider, settings) {
   });
 }
 
-const isNetworkError = (err) => err.name === 'TimeoutError' || err.name === 'AbortError'
-  || /fetch failed|ECONNREFUSED|ENOTFOUND/i.test(`${err.message} ${err.cause?.code || ''}`);
+// --- project briefs ---------------------------------------------------------
+function recordsSinceBrief(db, project) {
+  const b = db.prepare('SELECT generated_at FROM briefs WHERE project = ?').get(project);
+  const since = b?.generated_at ?? 0;
+  return db.prepare(`SELECT (SELECT count(*) FROM observations WHERE project = ? COLLATE NOCASE AND created_at > ?)
+    + (SELECT count(*) FROM summaries WHERE project = ? COLLATE NOCASE AND created_at > ?) n`).get(project, since, project, since).n;
+}
+
+export async function generateBrief(db, project, provider, settings) {
+  const prev = db.prepare('SELECT body FROM briefs WHERE project = ?').get(project)?.body || '';
+  const sums = db.prepare(`SELECT request, completed, learned, next_steps, created_at FROM summaries WHERE project = ? COLLATE NOCASE
+    ORDER BY created_at DESC LIMIT 15`).all(project);
+  if (!sums.length) return false;
+  const tasks = listItems(db, { kind: 'task', project, open: true, limit: 15 });
+  const notes = listItems(db, { kind: 'note', project, limit: 15 });
+  const files = new Map();
+  for (const r of db.prepare(`SELECT files_modified FROM observations WHERE project = ? COLLATE NOCASE AND files_modified IS NOT NULL
+      AND files_modified != '[]' ORDER BY created_at DESC LIMIT 300`).iterate(project)) {
+    try { for (const f of JSON.parse(r.files_modified)) files.set(f, (files.get(f) || 0) + 1); } catch { /* skip */ }
+  }
+  const user = [`Project: ${project}`, `Previous brief:\n${prev || '(none)'}`,
+    `Recent sessions (newest first):\n${sums.map((s) => `- ${new Date(s.created_at).toISOString().slice(0, 10)} ${clipLine(s.request, 200)}`
+      + `${s.completed ? ` | done: ${clipLine(s.completed, 300)}` : ''}${s.learned ? ` | learned: ${clipLine(s.learned, 300)}` : ''}`).join('\n')}`,
+    `Open tasks:\n${tasks.map((t) => `- [${t.status}] ${t.title}`).join('\n') || '(none)'}`,
+    `Notes:\n${notes.map((n) => `- ${n.title}: ${clipLine(n.body, 200)}`).join('\n') || '(none)'}`,
+    `Most-edited files: ${[...files.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([f]) => f).join(', ') || '(none)'}`].join('\n\n');
+  const reply = await completeJson(provider, BRIEF_SYSTEM, user, settings.llmTimeoutMs);
+  const body = String(reply.brief || '').trim().slice(0, 2000);
+  if (!body) return false;
+  db.prepare(`INSERT INTO briefs (project, body, generated_at, record_count, model) VALUES (?, ?, ?, 0, ?)
+    ON CONFLICT (project) DO UPDATE SET body = excluded.body, generated_at = excluded.generated_at, model = excluded.model`)
+    .run(project, redact(body), Date.now(), provider.model || null);
+  return true;
+}
+
+async function refreshBriefs(db, projects, provider, settings) {
+  if (provider.kind === 'none' || !settings.briefEvery) return;
+  for (const project of projects) {
+    if (!project || recordsSinceBrief(db, project) < settings.briefEvery) continue;
+    try {
+      if (await generateBrief(db, project, provider, settings)) log('info', `brief refreshed for ${project}`);
+    } catch (err) {
+      log('warn', `brief for ${project} failed: ${err.message}`);
+      if (isNetworkError(err)) return;
+    }
+  }
+}
 
 // Processes the queue until empty. Returns number of items handled.
-export async function drain(db, settings, { lock = true, provider: forced } = {}) {
+export async function drain(db, settings, { lock = true, provider: forced, sync = true } = {}) {
   if (lock && !acquireLock()) return 0;
   let handled = 0;
+  const touched = new Set();
   try {
     const provider = forced || await resolveProvider(settings);
     if (provider.kind === 'none' && provider.reason) log('info', `drain without LLM: ${provider.reason}`);
     for (let item = claim(db); item; item = claim(db)) {
+      touched.add(item.project);
       try {
         if (item.kind === 'observation') await processObservation(db, item, provider, settings);
         else if (item.kind === 'summary') await processSummary(db, item, provider, settings);
@@ -190,6 +248,10 @@ export async function drain(db, settings, { lock = true, provider: forced } = {}
         db.prepare('UPDATE queue SET status = ?, error = ? WHERE id = ?').run(status, String(err.message).slice(0, 500), item.id);
         log('warn', `queue item ${item.id} (${item.kind}) attempt ${item.attempts}: ${err.message}`);
       }
+    }
+    await refreshBriefs(db, touched, provider, settings);
+    if (settings.mode === 'remote' && settings.serverUrl && sync) {
+      try { await pushPending(db, settings); } catch (err) { log('warn', `sync failed, will retry: ${err.message}`); }
     }
   } finally {
     if (lock) releaseLock();

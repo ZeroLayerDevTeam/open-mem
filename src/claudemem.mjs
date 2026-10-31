@@ -69,7 +69,7 @@ function importTable(db, src, { name, table, select, map, insert, metaKey }) {
 }
 
 // Copies claude-mem rows newer than the last import. Source opened read-only.
-export function importClaudeMem(db, file = claudeMemDbPath()) {
+export function importClaudeMem(db, file = claudeMemDbPath(), { device = null } = {}) {
   if (!file) return { ok: false, reason: 'claude-mem database not found' };
   const src = new DatabaseSync(file, { readOnly: true });
   try {
@@ -94,7 +94,7 @@ export function importClaudeMem(db, file = claudeMemDbPath()) {
           ['COALESCE(t.narrative, t.text)', 'narrative', ['narrative', 'text']], ['t.facts', 'facts', ['facts']],
           ['t.concepts', 'concepts', ['concepts']], ['t.files_read', 'files_read', ['files_read']],
           ['t.files_modified', 'files_modified', ['files_modified']], ['t.prompt_number', 'prompt_number', ['prompt_number']]])}`,
-        map: (r) => ({ ...r, session_id: sessionOf(r.session_id), source: 'claude-mem', source_id: String(r.id) }),
+        map: (r) => ({ ...r, session_id: sessionOf(r.session_id), device, source: 'claude-mem', source_id: String(r.id) }),
         insert: insertObservation,
       }),
       importTable(db, src, {
@@ -102,7 +102,7 @@ export function importClaudeMem(db, file = claudeMemDbPath()) {
         select: (c) => `t.id AS id, ${project(c)} AS project, ${epoch(c)} AS created_at, ${pick(c,
           ['memory_session_id', 'request', 'investigated', 'learned', 'completed', 'next_steps', 'notes', 'prompt_number']
             .map((k) => [`t.${k}`, k === 'memory_session_id' ? 'session_id' : k, [k]]))}`,
-        map: (r) => ({ ...r, session_id: sessionOf(r.session_id), source: 'claude-mem', source_id: String(r.id) }),
+        map: (r) => ({ ...r, session_id: sessionOf(r.session_id), device, source: 'claude-mem', source_id: String(r.id) }),
         insert: insertSummary,
       }),
       importTable(db, src, {
@@ -115,8 +115,8 @@ export function importClaudeMem(db, file = claudeMemDbPath()) {
             ['t.prompt_text', 'text', ['prompt_text']]])}`;
         },
         map: (r) => r,
-        insert: (d, r) => Number(d.prepare(`INSERT OR IGNORE INTO prompts (session_id, project, prompt_number, text, created_at, source, source_id)
-          VALUES (?, ?, ?, ?, ?, 'claude-mem', ?)`).run(r.session_id, r.project, r.prompt_number, r.text, r.created_at, String(r.id)).changes) || null,
+        insert: (d, r) => Number(d.prepare(`INSERT OR IGNORE INTO prompts (session_id, project, prompt_number, text, created_at, source, source_id, device)
+          VALUES (?, ?, ?, ?, ?, 'claude-mem', ?, ?)`).run(r.session_id, r.project, r.prompt_number, r.text, r.created_at, String(r.id), device).changes) || null,
       }),
     ].filter(Boolean);
     setMeta(db, 'claude_mem_last_import_at', new Date().toISOString());

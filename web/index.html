@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>open-mem</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" type="module"></script>
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <form id="login-form" class="login-card">
+    <h1 class="wordmark">open-mem</h1>
+    <p>Paste the admin token printed when the plugin was installed.</p>
+    <label for="token">Admin token</label>
+    <input id="token" name="token" type="password" autocomplete="current-password" spellcheck="false" required placeholder="om_admin_…">
+    <button type="submit">Log in</button>
+    <p id="login-error" class="error" role="alert"></p>
+    <p class="hint">Lost it? Run <code>token reset</code> with the open-mem CLI on the machine that holds the database.</p>
+  </form>
+</div>
+
+<div id="app" class="app" hidden>
+  <nav class="rail" aria-label="Sections">
+    <a class="wordmark" href="#/overview">open-mem</a>
+    <ul>
+      <li><a href="#/overview" data-nav="overview">Progress</a></li>
+      <li><a href="#/projects" data-nav="projects">Projects</a></li>
+      <li><a href="#/timeline" data-nav="timeline">Timeline</a></li>
+      <li><a href="#/tasks" data-nav="tasks">Tasks</a></li>
+      <li><a href="#/notes" data-nav="notes">Notes</a></li>
+      <li><a href="#/search" data-nav="search">Search</a></li>
+      <li><a href="#/sessions" data-nav="sessions">Sessions</a></li>
+    </ul>
+    <button id="logout" class="link">Log out</button>
+  </nav>
+  <main id="view" tabindex="-1"></main>
+</div>
+
+<aside id="drawer" class="drawer" hidden aria-label="Record detail">
+  <button id="drawer-close" class="drawer-close" aria-label="Close">×</button>
+  <div id="drawer-body"></div>
+</aside>
+</body>
+</html>

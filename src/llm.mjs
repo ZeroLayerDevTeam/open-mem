@@ -107,3 +107,11 @@ Reply with ONLY a JSON object:
 {"skip": false, "request": "what the user asked", "investigated": "...", "learned": "...", "completed": "...",
  "next_steps": "...", "notes": "..."}
 or {"skip": true}`;
+
+export const BRIEF_SYSTEM = `You maintain a short project brief that a coding assistant reads at the start of every session,
+so it can start working without re-exploring the project. You receive the previous brief (may be empty), recent
+session summaries, open tasks, notes and the most-edited files.
+Write the brief in the same language as the summaries. At most 1200 characters, markdown bullets, no preamble.
+Cover: what the project is and its stack; how to build/test/run if known; current state and focus; key decisions,
+conventions and gotchas; where important things live. Drop anything outdated. Never include secrets.
+Reply with ONLY a JSON object: {"brief": "..."}`;

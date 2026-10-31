@@ -4,12 +4,13 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dataPath, loadSettings, log, projectFromCwd } from './config.mjs';
+import { dataPath, deviceName, loadSettings, log, projectFromCwd } from './config.mjs';
 
 // node:sqlite modules load only after the Node version check below.
-let getMeta, openDb, claudeMemDbPath, enqueue, spawnDrainer, addPrompt, contextFor, currentPromptNumber, ensureSession;
+let m;
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const CLI = path.join(ROOT, 'src', 'cli.mjs');
 const OWN_TOOLS = /^mcp__plugin_open-mem_/;
 
 function readStdin() {
@@ -21,55 +22,98 @@ function readStdin() {
   }
 }
 
-function spawnImport() {
-  const child = spawn(process.execPath, ['--no-warnings', path.join(ROOT, 'src', 'cli.mjs'), 'import', '--quiet'], {
-    detached: true, stdio: 'ignore', windowsHide: true,
-  });
+function spawnCli(...args) {
+  const child = spawn(process.execPath, ['--no-warnings', CLI, ...args], { detached: true, stdio: 'ignore', windowsHide: true });
   child.unref();
 }
 
-function sessionStart(db, input, settings, project) {
-  ensureSession(db, { sessionId: input.session_id, project, cwd: input.cwd });
+function pidAlive(file) {
+  try {
+    const pid = Number(fs.readFileSync(file, 'utf8'));
+    if (!pid) return false;
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
+
+const out = (obj) => process.stdout.write(JSON.stringify(obj));
+
+async function sessionStart(db, input, settings, project) {
+  const device = deviceName(settings);
+  m.ensureSession(db, { sessionId: input.session_id, project, cwd: input.cwd, device, ...m.gitInfo(input.cwd) });
   // Lets skills/users find the CLI: node "$(cat ~/.claude-open-mem/plugin-root)/src/cli.mjs"
   fs.writeFileSync(dataPath('plugin-root'), ROOT);
-  if (settings.autoImportClaudeMem && claudeMemDbPath()) spawnImport();
-  spawnDrainer();
-  let context = contextFor(db, project, settings);
-  if (!getMeta(db, 'claude_mem_last_import_at') && claudeMemDbPath() && settings.autoImportClaudeMem) {
-    context += '\n\n(claude-open-mem is importing your claude-mem history in the background; it will show up next session.)';
+  if (settings.autoImportClaudeMem && m.claudeMemDbPath()) spawnCli('import', '--quiet');
+  m.spawnDrainer(); // also pushes unsynced rows in shared mode
+
+  const notices = [];
+  if (settings.mode !== 'remote') {
+    // First run after install: create the web admin token and show it exactly once.
+    const token = m.createAdminToken(db);
+    const url = `http://${settings.webHost === '0.0.0.0' ? '127.0.0.1' : settings.webHost}:${settings.webPort}`;
+    if (token) {
+      notices.push(`claude-open-mem web viewer: ${url}\nAdmin token (shown only this once, store it in your password manager):\n${token}\n`
+        + 'Lost it? Run the open-mem CLI: token reset');
+    }
+    if (settings.webAutostart && !pidAlive(dataPath('serve.pid'))) spawnCli('serve', '--quiet');
   }
-  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } }));
+
+  let { result: ctx, fallback } = await m.call('context', { project, cwd: input.cwd }, { db: () => db, settings });
+  let text = ctx.text;
+  if (fallback) text += '\n\n(open-mem: shared server unreachable, showing this machine\'s local memory.)';
+  if (!m.getMeta(db, 'claude_mem_last_import_at') && m.claudeMemDbPath() && settings.autoImportClaudeMem) {
+    text += '\n\n(claude-open-mem is importing your claude-mem history in the background; it will show up next session.)';
+  }
+  m.markInjected(db, input.session_id, ctx.refs || []);
+  out({
+    ...(notices.length ? { systemMessage: notices.join('\n\n') } : {}),
+    hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text },
+  });
+}
+
+async function userPrompt(db, input, settings, project) {
+  const device = deviceName(settings);
+  m.addPrompt(db, { sessionId: input.session_id, project, cwd: input.cwd, device, text: input.prompt });
+  if (!settings.recallOnPrompt) return;
+  const exclude = [...m.injectedRefs(db, input.session_id)];
+  const { result: rows } = await m.call('recall', { prompt: input.prompt, project, exclude, limit: settings.recallLimit },
+    { db: () => db, settings });
+  if (!rows?.length) return;
+  m.markInjected(db, input.session_id, rows.map(m.refId));
+  out({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: m.formatRecall(rows) } });
 }
 
 function postTool(db, input, settings, project) {
   const tool = input.tool_name || '';
   if (!tool || settings.skipTools.includes(tool) || OWN_TOOLS.test(tool)) return;
-  ensureSession(db, { sessionId: input.session_id, project, cwd: input.cwd });
-  enqueue(db, 'observation', input.session_id, project, {
-    tool, input: input.tool_input, output: input.tool_response,
-    prompt_number: currentPromptNumber(db, input.session_id), at: Date.now(),
+  m.ensureSession(db, { sessionId: input.session_id, project, cwd: input.cwd, device: deviceName(settings) });
+  m.enqueue(db, 'observation', input.session_id, project, {
+    tool, input: input.tool_input, output: input.tool_response, tool_use_id: input.tool_use_id,
+    prompt_number: m.currentPromptNumber(db, input.session_id), at: Date.now(),
   });
-  spawnDrainer();
+  m.spawnDrainer();
 }
 
 function stop(db, input, project) {
-  const n = currentPromptNumber(db, input.session_id);
+  const n = m.currentPromptNumber(db, input.session_id);
   if (!n) return;
-  enqueue(db, 'summary', input.session_id, project, { prompt_number: n, transcript_path: input.transcript_path, at: Date.now() });
-  spawnDrainer();
+  m.enqueue(db, 'summary', input.session_id, project, { prompt_number: n, transcript_path: input.transcript_path, at: Date.now() });
+  m.spawnDrainer();
 }
 
-function main() {
+async function main() {
   const event = process.argv[2];
   const input = readStdin();
   if (!input.session_id) return;
   const settings = loadSettings();
   const project = projectFromCwd(input.cwd);
   if (settings.excludedProjects.some((p) => p.toLowerCase() === project.toLowerCase())) return;
-  const db = openDb();
+  const db = m.openDb();
   try {
-    if (event === 'session-start') sessionStart(db, input, settings, project);
-    else if (event === 'user-prompt' && input.prompt) addPrompt(db, { sessionId: input.session_id, project, cwd: input.cwd, text: input.prompt });
+    if (event === 'session-start') await sessionStart(db, input, settings, project);
+    else if (event === 'user-prompt' && input.prompt) await userPrompt(db, input, settings, project);
     else if (event === 'post-tool') postTool(db, input, settings, project);
     else if (event === 'stop') stop(db, input, project);
   } finally {
@@ -85,11 +129,16 @@ if (major < 22 || (major === 22 && minor < 13)) {
   }
 } else {
   try {
-    ({ getMeta, openDb } = await import('./db.mjs'));
-    ({ claudeMemDbPath } = await import('./claudemem.mjs'));
-    ({ enqueue, spawnDrainer } = await import('./queue.mjs'));
-    ({ addPrompt, contextFor, currentPromptNumber, ensureSession } = await import('./store.mjs'));
-    main();
+    m = {
+      ...(await import('./db.mjs')),
+      ...(await import('./auth.mjs')),
+      ...(await import('./backend.mjs')),
+      ...(await import('./claudemem.mjs')),
+      ...(await import('./meta.mjs')),
+      ...(await import('./queue.mjs')),
+      ...(await import('./store.mjs')),
+    };
+    await main();
   } catch (err) {
     log('error', `hook ${process.argv[2]} failed: ${err.stack || err.message}`);
   }

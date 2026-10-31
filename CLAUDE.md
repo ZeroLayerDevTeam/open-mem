@@ -1,26 +1,34 @@
 # claude-open-mem
 
-Plugin de Claude Code (id `open-mem`, marketplace `claude-open-mem`): memoria persistente local, alternativa
-abierta a claude-mem. Comprime con LLM local (Ollama) / endpoint OpenAI-compatible / sin LLM — **nunca** con la
-suscripción de Claude (ese era el límite de claude-mem: gasta la cuota de 5 h del plan y se pausa al 95 %).
+Claude Code plugin (id `open-mem`, marketplace `claude-open-mem`): local persistent memory, an open alternative to
+claude-mem. Compresses with a local LLM (Ollama) / an OpenAI-compatible endpoint / no LLM — **never** with the
+user's Claude subscription (that was claude-mem's limit: it spends the 5-hour quota and pauses at 95 %).
 
-- Stack: Node ≥ 22.13, **cero dependencias** (`node:sqlite` + FTS5). Nada de pnpm install necesario.
-- `src/hook.mjs` hooks (solo encolan) · `src/queue.mjs` drenador en segundo plano (lock `drain.lock`) ·
-  `src/store.mjs` lecturas/escrituras + búsqueda · `src/mcp-server.mjs` MCP stdio a mano ·
-  `src/claudemem.mjs` importación incremental (solo lectura) + desinstalación · `src/cli.mjs`.
-- Datos: `~/.claude-open-mem/` (`CLAUDE_OPEN_MEM_DATA_DIR` para tests).
-- Test: `node --no-warnings --test "test/*.test.mjs"` · Validar: `claude plugin validate .`
+- Stack: Node ≥ 22.13, **zero dependencies** (`node:sqlite` + FTS5). No install step.
+- `src/hook.mjs` hooks (enqueue + context/recall) · `src/queue.mjs` background drainer (`drain.lock`), briefs, sync ·
+  `src/store.mjs` records, search, recall, session context · `src/items.mjs` notes/tasks + history ·
+  `src/views.mjs` web read models · `src/server.mjs` HTTP API + web (`web/`) · `src/auth.mjs` admin token, device keys,
+  web sessions · `src/sync.mjs` client push / server ingest · `src/backend.mjs` local vs remote with fallback ·
+  `src/mcp-server.mjs` hand-written MCP stdio · `src/claudemem.mjs` import + uninstall · `src/cli.mjs`.
+- Data: `~/.claude-open-mem/` (`CLAUDE_OPEN_MEM_DATA_DIR` for tests). Schema version in `PRAGMA user_version` (`db.mjs`).
+- Test: `node --no-warnings --test "test/*.test.mjs"` · Validate: `claude plugin validate .`
+- Personal deployment notes (servers, IPs, keys) live in `DEPLOY.local.md` and `proyecto.md`, both gitignored —
+  never commit them.
 
-## Errores conocidos — no repetir
+## Known mistakes — do not repeat
 
-- El nombre de plugin no puede empezar por `claude-` (reservado por el validador) → id `open-mem`.
-  El repo/proyecto sí se llama `claude-open-mem`.
-- `node --test test/` falla en Windows (lo trata como módulo) → usar el glob `"test/*.test.mjs"`.
-- Los imports de `node:sqlite` en `hook.mjs` son dinámicos a propósito: así el aviso de Node antiguo funciona.
-- qwen3:14b no descarta llamadas triviales; gemma3:12b sí y es más rápido (~4-7 s en RTX 4060 Ti) → preferido en `auto`.
-- Redacción de secretos (`src/redact.mjs`) en enqueue + insert + prompts; `cli redact` re-escanea la BD. La
-  BD importada traía 75 filas con tokens (GitLab, Context7…) — nunca guardar sin pasar por `redactText`.
-- Al escribir regex con `\b` desde Python heredoc se coló un carácter backspace (0x08): editar regex con Edit, no con Python.
-- Desinstalar claude-mem nunca borra datos: `--move-data` solo renombra.
-- No usar `.mcp.json` en la raíz del plugin: al abrir Claude Code dentro del repo se carga también como MCP de
-  proyecto, sin `${CLAUDE_PLUGIN_ROOT}`, y falla (`CONNECTION_CLOSED`). El MCP se declara en `plugin.json` → `mcpServers`.
+- Plugin names cannot start with `claude-` (reserved by the validator) → id `open-mem`. The repo is `claude-open-mem`.
+- `node --test test/` fails on Windows (treated as a module) → use the glob `"test/*.test.mjs"`.
+- `node:sqlite` imports in `hook.mjs` are dynamic on purpose, so the old-Node warning still works.
+- qwen3:14b does not skip trivial calls; gemma3:12b does and is faster (~4-7 s on an RTX 4060 Ti) → preferred in `auto`.
+- Secret redaction (`src/redact.mjs`) on enqueue + insert + prompts + ingest; `cli redact` rescans the DB. The imported
+  DB had 75 rows with tokens (GitLab, Context7…) — never store without `redactText`.
+- Writing regexes with `\b` through a Python heredoc inserted a backspace (0x08): edit regexes with Edit, not Python.
+  Long Python heredocs in Git Bash also hang or break on quotes → use Edit/Write.
+- Uninstalling claude-mem never deletes data: `--move-data` only renames.
+- No `.mcp.json` at the plugin root: opening Claude Code inside the repo also loads it as a project MCP server without
+  `${CLAUDE_PLUGIN_ROOT}` and it fails (`CONNECTION_CLOSED`). The MCP server is declared in `plugin.json` → `mcpServers`.
+- `items.kind` (note/task) is not the record `kind` (obs/sum/item): records expose it as `item_kind`.
+- MCP tool calls are async: replies can arrive out of order — tests sort by id.
+- Never print or paste the admin token / device keys in a transcript: pipe `device add --raw` into `remote connect`,
+  and let the user run `token init|reset` themselves.
