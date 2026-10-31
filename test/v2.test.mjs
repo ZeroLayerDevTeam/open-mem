@@ -136,6 +136,25 @@ test('server: login, protected API, CSRF guard, static page', async () => {
   }
 });
 
+test('server: login rate limit is per client behind a proxy, not per proxy', async () => {
+  const { clientIp } = await import('../src/server.mjs');
+  const req = (peer, headers = {}) => ({ socket: { remoteAddress: peer }, headers });
+  assert.equal(clientIp(req('::ffff:172.18.0.5', { 'x-real-ip': '81.2.3.4' })), '81.2.3.4');
+  assert.equal(clientIp(req('172.18.0.5', { 'x-forwarded-for': '81.2.3.4, 172.18.0.1' })), '81.2.3.4');
+  assert.equal(clientIp(req('81.9.9.9', { 'x-real-ip': '1.1.1.1' })), '81.9.9.9', 'public peers cannot spoof');
+  const { db, server, url } = await startServer(path.join(TMP, 'rl.db'));
+  try {
+    auth.createAdminToken(db);
+    const login = (ip) => fetch(`${url}/api/login`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-real-ip': ip }, body: '{"token":"om_admin_bad"}' });
+    for (let i = 0; i < 10; i++) assert.equal((await login('81.0.0.1')).status, 401);
+    assert.equal((await login('81.0.0.1')).status, 429);
+    assert.equal((await login('81.0.0.2')).status, 401, 'another client is not locked out');
+  } finally {
+    server.close();
+    db.close();
+  }
+});
+
 test('shared mode: client pushes to server, reads remotely, falls back locally', async () => {
   const { db: sdb, server, url } = await startServer(path.join(TMP, 'shared.db'));
   const key = auth.addDevice(sdb, 'portatil');

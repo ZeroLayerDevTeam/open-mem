@@ -65,8 +65,20 @@ function cookies(req) {
 
 // --- login rate limit: 10 attempts per IP per 15 minutes -------------------------------
 const attempts = new Map();
+const PRIVATE_IP = /^(::ffff:)?(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)|^::1$|^f[cd]/i;
+
+// Behind a reverse proxy every request comes from the proxy's private address; then the client is in
+// X-Real-IP / X-Forwarded-For. A public peer cannot set those headers to dodge the limit.
+export function clientIp(req) {
+  const peer = req.socket.remoteAddress || '';
+  if (!PRIVATE_IP.test(peer)) return peer;
+  const fwd = String(req.headers['x-real-ip'] || req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return fwd || peer;
+}
+
 function allowLogin(ip) {
   const now = Date.now();
+  if (attempts.size > 10000) for (const [k, v] of attempts) if (v.reset < now) attempts.delete(k);
   const a = attempts.get(ip);
   if (!a || a.reset < now) { attempts.set(ip, { n: 1, reset: now + 15 * 60 * 1000 }); return true; }
   a.n++;
@@ -121,14 +133,15 @@ export function createServer(db, settings) {
 
     if (route === '/api/login' && req.method === 'POST') {
       checkOrigin(req);
-      if (!allowLogin(req.socket.remoteAddress)) throw new HttpError(429, 'too many attempts, wait 15 minutes');
+      const ip = clientIp(req);
+      if (!allowLogin(ip)) throw new HttpError(429, 'too many attempts, wait 15 minutes');
       if (!hasAdminToken(db)) throw new HttpError(503, 'no admin token yet: run `cli token init` on the server');
       const { token } = await readBody(req, 4096);
       if (!checkAdminToken(db, String(token || '').trim())) {
-        log('warn', `web login failed from ${req.socket.remoteAddress}`);
+        log('warn', `web login failed from ${ip}`);
         throw new HttpError(401, 'wrong token');
       }
-      attempts.delete(req.socket.remoteAddress);
+      attempts.delete(ip);
       const s = createWebSession(db);
       const secure = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
       return send(res, 200, { ok: true }, { 'set-cookie': `${COOKIE}=${s.id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${s.maxAgeSec}${secure}` });

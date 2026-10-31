@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2
+
+- Login rate limit keyed on the real client behind a reverse proxy (X-Real-IP / X-Forwarded-For, trusted only from
+  private peers), so one attacker cannot lock everyone out; stale entries pruned.
+
 ## 0.2.1
 
 - Data folder created owner-only (700).
