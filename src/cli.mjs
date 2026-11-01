@@ -13,6 +13,8 @@ import { withRecorder } from './llmstats.mjs';
 import { call } from './backend.mjs';
 import { exportFileName, itemsMarkdown } from './export.mjs';
 import { startGuard } from './guard.mjs';
+import { describeGpu, detectGpu, MODELS, recommendModel } from './hardware.mjs';
+import { ensureRunning, findOllama, installMethod, ollamaModels, OLLAMA_URL, planSetup, pullModel, runInstall } from './setup.mjs';
 import { serve } from './server.mjs';
 import { formatIndex, recallStats, redactExisting, stats } from './store.mjs';
 import { pushPending, remoteFetch } from './sync.mjs';
@@ -23,6 +25,9 @@ const HELP = `claude-open-mem ${VERSION}
 Usage: node cli.mjs <command> [options]
 
   status                         Database counts, LLM provider, mode, claude-mem detection
+  check                          GPU found and the local model it fits (exit 2 = no usable GPU)
+  setup [--yes] [--model M] [--cpu]
+                                 Detect the GPU, install Ollama if missing and pull the model that fits it (asks first)
   import [--quiet]               Import new rows from claude-mem (read-only, incremental)
   drain [--force]                Process the pending queue now (--force: even while a game runs)
   busy [--unload]                Is a game running? (exit 0 = busy) --unload frees the Ollama models then
@@ -107,6 +112,8 @@ async function main() {
     return console.log(JSON.stringify(shown, null, 2));
   }
   if (cmd === 'guard') return guardCmd(settings, args);
+  if (cmd === 'setup') return setupCmd(settings, args);
+  if (cmd === 'check') return checkCmd();
 
   const db = openDb();
   let keepOpen = false;
@@ -223,6 +230,84 @@ async function exportCmd(db, settings, args) {
   fs.mkdirSync(out, { recursive: true });
   for (const [name, list] of byProject) fs.writeFileSync(path.join(out, exportFileName(name)), itemsMarkdown(name, list));
   console.log(`exported ${items.length} note(s)/task(s) of ${byProject.size} project(s) to ${out}`);
+}
+
+async function ask(question) {
+  if (!process.stdin.isTTY) return false;
+  const { createInterface } = await import('node:readline/promises');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try { return /^(y|yes|s|si|sí)$/i.test((await rl.question(`${question} [y/N] `)).trim()); } finally { rl.close(); }
+}
+
+// For install scripts, before the plugin is installed: the GPU and the model it fits. Exit 2 = no usable GPU.
+async function checkCmd() {
+  const gpu = await detectGpu();
+  const rec = recommendModel(gpu);
+  console.log(`GPU: ${describeGpu(gpu)}`);
+  if (rec.model) {
+    console.log(`Local model: ${rec.model}${MODELS[rec.model]?.quality === 'low' ? ' (smallest model, rougher observations)' : ''}`);
+    return;
+  }
+  console.log('No usable GPU: the local LLM that writes summaries, project briefs and semantic search needs one.');
+  console.log('open-mem still runs without it (plain records + full-text search), or with a shared server, an');
+  console.log('OpenAI-compatible endpoint, or a small model on the CPU (slow). See "GPU and local model" in the README.');
+  process.exitCode = 2;
+}
+
+// Detect the GPU, show what would be installed and downloaded, ask, then do it.
+async function setupCmd(settings, args) {
+  const yes = flag(args, '--yes');
+  const opts = { cpu: flag(args, '--cpu'), model: option(args, '--model') };
+  const baseUrl = (settings.baseUrl || OLLAMA_URL).replace(/\/+$/, '');
+  const [gpu, installed, models] = await Promise.all([detectGpu(), findOllama(), ollamaModels(baseUrl)]);
+  console.log(`GPU: ${describeGpu(gpu)}`);
+  console.log(`Ollama: ${models ? `running at ${baseUrl}, ${models.length} model(s)` : installed ? `installed (${installed}), not running` : 'not installed'}`);
+  const plan = planSetup({ gpu, installed, models, settings, opts });
+  if (plan.blocked) {
+    console.log(`\n${plan.blocked}`);
+    process.exitCode = 1;
+    return;
+  }
+  for (const w of plan.warnings) console.log(`Warning: ${w}`);
+  if (!plan.steps.length) {
+    if (plan.model && settings.model !== plan.model) saveSettings({ ...settings, model: plan.model });
+    console.log(`Nothing to install: open-mem will use ${plan.model || `the chat model Ollama serves (${models.join(', ')})`}.`);
+    return;
+  }
+  const method = plan.steps.some((s) => s.kind === 'install') ? await installMethod() : null;
+  console.log('\nPlan:');
+  for (const s of plan.steps) {
+    if (s.kind === 'install') {
+      console.log(method.cmd ? `  - install Ollama: ${method.cmd} ${method.args.join(' ')}${method.sudo ? ' (asks for your sudo password)' : ''}`
+        : `  - install Ollama from ${method.url}`);
+    }
+    if (s.kind === 'start') console.log('  - start Ollama (ollama serve)');
+    if (s.kind === 'pull') console.log(`  - download ${s.model}${s.sizeGb ? ` (${s.sizeGb} GB)` : ''}`);
+  }
+  if (method && !method.cmd) {
+    console.log(`\nNo package manager can install Ollama here: install it from ${method.url}, then run setup again.`);
+    process.exitCode = 1;
+    return;
+  }
+  const size = plan.downloadGb ? ` (${plan.downloadGb.toFixed(1)} GB to download)` : '';
+  if (!yes && !(await ask(`\nGo ahead${size}?`))) {
+    console.log(process.stdin.isTTY ? 'Nothing changed.' : 'Nothing changed. Run it in a terminal, or add --yes.');
+    process.exitCode = 1;
+    return;
+  }
+  if (method) await runInstall(method);
+  if (!(await ensureRunning(installed || await findOllama(), baseUrl))) throw new Error(`Ollama does not answer at ${baseUrl}; start it and run setup again`);
+  for (const s of plan.steps.filter((x) => x.kind === 'pull')) {
+    let last = -1;
+    await pullModel(s.model, baseUrl, (f, status) => {
+      const pct = f == null ? null : Math.floor(f * 100);
+      if (process.stdout.isTTY) process.stdout.write(`\r${s.model}: ${pct == null ? status : `${pct}%`}`.padEnd(60));
+      else if (pct != null && pct >= last + 25) { last = pct; console.log(`${s.model}: ${pct}%`); }
+    });
+    console.log(`${process.stdout.isTTY ? '\r' : ''}${s.model}: done`.padEnd(60));
+  }
+  saveSettings({ ...settings, provider: 'auto', ...(plan.model ? { model: plan.model } : {}) });
+  console.log(`Ready: open-mem compresses with ${plan.model || 'the model Ollama serves'} from the next tool call.`);
 }
 
 function backupCmd(db, args) {
