@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0
+
+- `cli setup [--yes] [--model M] [--cpu]`: detects the GPU (NVIDIA through nvidia-smi, any card on Windows through the registry, AMD on Linux through amdgpu, Apple Silicon unified memory), installs Ollama when missing (winget, Homebrew or Ollama's script, after asking) and pulls the model that fits: 11 GB or more `gemma3:12b`, 5.5 to 11 GB `gemma3:4b`, 2 to 5.5 GB `gemma3:1b`, plus `embeddinggemma`. Without a usable GPU it installs nothing and lists the alternatives (no LLM, shared server, OpenAI-compatible endpoint, `--cpu`).
+- `cli check`: the GPU found and the model it fits (exit 2 = no usable GPU).
+- `install.ps1` (Windows) and `install.sh` (Linux, macOS): check Node.js and Claude Code, warn before installing when there is no usable GPU, install the plugin and run `setup`.
+- The first session on a machine where no LLM answers shows how to run `setup` (once, to the user only, not in Claude's context).
+- README: new section "GPU and local model" (read it before installing).
+
 ## 0.6.1
 
 - `cli backup` builds the copy in the data folder and then moves it to `--out`: SQLite cannot lock a file on a network share (SMB/CIFS), so VACUUM INTO straight onto one hung or failed with "database is locked" (the real cause of the failed nightly backup). A failed copy leaves no partial file.
