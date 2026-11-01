@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1
+
+- `cli backup` builds the copy in the data folder and then moves it to `--out`: SQLite cannot lock a file on a network share (SMB/CIFS), so VACUUM INTO straight onto one hung or failed with "database is locked" (the real cause of the failed nightly backup). A failed copy leaves no partial file.
+
 ## 0.6.0
 
 - `cli backup [--out FILE] [--keep N]`: a consistent copy of the database while it is in use (VACUUM INTO, which waits for writers through busy_timeout, then `integrity_check` on the copy; a bad copy is removed). Without `--out` it goes to `backups/` in the data folder and keeps the newest N (7). A backup script that ran VACUUM INTO on its own read-only connection failed with "database is locked" while the drainer was writing.

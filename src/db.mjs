@@ -336,17 +336,32 @@ export function setMeta(db, key, value) {
 }
 
 // Consistent copy of the live database (WAL, other processes writing) to `dest`, checked before it counts.
-// VACUUM INTO waits on busy_timeout like any read; a copy that fails the integrity check is removed.
+// VACUUM INTO waits on busy_timeout like any read. It writes into a temporary file next to the database and the
+// checked copy is then moved to `dest`: SQLite cannot lock a file on a network share (SMB/CIFS), so writing there
+// directly hangs or fails with "database is locked".
 export function backupDb(db, dest) {
   if (fs.existsSync(dest)) throw new Error(`${dest} already exists`);
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  db.prepare('VACUUM INTO ?').run(dest);
-  const copy = new DatabaseSync(dest, { readOnly: true });
-  let check;
-  try { check = copy.prepare('PRAGMA integrity_check').get().integrity_check; } finally { copy.close(); }
-  if (check !== 'ok') {
-    fs.rmSync(dest, { force: true });
-    throw new Error(`backup failed the integrity check: ${check}`);
+  const tmp = dataPath(`backup-${process.pid}-${Date.now()}.tmp`);
+  try {
+    db.prepare('VACUUM INTO ?').run(tmp);
+    const copy = new DatabaseSync(tmp, { readOnly: true });
+    let check;
+    try { check = copy.prepare('PRAGMA integrity_check').get().integrity_check; } finally { copy.close(); }
+    if (check !== 'ok') throw new Error(`backup failed the integrity check: ${check}`);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    try {
+      fs.renameSync(tmp, dest);
+    } catch (err) {
+      if (err.code !== 'EXDEV') throw err;
+      try {
+        fs.copyFileSync(tmp, dest, fs.constants.COPYFILE_EXCL);
+      } catch (copyErr) {
+        if (copyErr.code !== 'EEXIST') fs.rmSync(dest, { force: true }); // no half-written backup left behind
+        throw copyErr;
+      }
+    }
+    return fs.statSync(dest).size;
+  } finally {
+    fs.rmSync(tmp, { force: true });
   }
-  return fs.statSync(dest).size;
 }
