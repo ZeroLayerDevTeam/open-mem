@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- GPU guard for a shared server without a GPU (`cli guard`, `guardAllow`, `guardPort`, `guardPollSeconds`, new `src/guard.mjs`). The machine with the GPU lets the listed addresses reach its Ollama through a small proxy, limited to the calls a server needs. While a game runs it answers 503, cuts the calls in flight and unloads the models, so a server that cannot see the game still leaves the GPU alone. Ollama stays on loopback, and session start runs the guard once `guardAllow` is set.
+
 ## 0.5.3
 
 - Wake-on-LAN for a shared server whose Ollama runs on another machine (`wakeMac`, `wakeBroadcast`, `wakeOffMinutes`, `wakeOffCommand`, new `src/wake.mjs`). Every 30 s `cli serve` checks: queued work and the LLM not answering sends a magic packet (again after 5 minutes if still asleep); once the LLM answers it starts a drain; `wakeOffMinutes` after the last LLM call it runs `wakeOffCommand`. Only a machine the server woke is turned off, and the command decides whether it is in use (exit 3 leaves it on).

@@ -64,6 +64,7 @@ async function sessionStart(db, input, settings, project) {
     }
     if (settings.webAutostart && !pidAlive(dataPath('serve.pid'))) spawnCli('serve', '--quiet');
   }
+  if (settings.guardAllow.length && !pidAlive(dataPath('guard.pid'))) spawnCli('guard', '--quiet');
 
   const args = { project, cwd: input.cwd, ...(firstToday ? { recap: { until: dayStart, tz: new Date().getTimezoneOffset() } } : {}) };
   let { result: ctx, fallback } = await m.call('context', args, { db: () => db, settings });
