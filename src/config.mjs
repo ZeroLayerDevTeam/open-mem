@@ -16,8 +16,9 @@ export const DEFAULT_SETTINGS = {
   // Once an LLM has been seen, a queue item waits this long for it to come back before it is stored
   // without one (the no-LLM path keeps only edits and commands).
   llmWaitHours: 72,
-  // How long Ollama keeps the model in (V)RAM after the last call. Short, so the GPU is free soon after a drain.
-  llmKeepAlive: '30s',
+  // How long Ollama keeps the model in (V)RAM after the last call. Long enough that the next drain finds it loaded
+  // instead of reloading it; pauseWhenBusy (and the GPU guard) still unload it as soon as a game starts.
+  llmKeepAlive: '10m',
   // While one of these runs, the queue waits and the Ollama models are unloaded (no LLM work while gaming).
   // busyProcesses: exe names (GTA5.exe) or path fragments (D:\Games\); busyPaths: game library folders.
   pauseWhenBusy: true,

@@ -177,7 +177,7 @@ claude-open-mem never deletes claude-mem data.
 | `webHost` / `webPort` / `webAutostart` | `127.0.0.1` / 37800 / `true` | Web viewer |
 | `maxToolChars` | 6000 | Tool output sent to the LLM |
 | `llmWaitHours` | 72 | How long queued calls wait for an LLM that is down before being stored without it |
-| `llmKeepAlive` | `30s` | How long Ollama keeps the model loaded after the last call |
+| `llmKeepAlive` | `10m` | How long Ollama keeps the model loaded after the last call |
 | `pauseWhenBusy` | `true` | Pause the queue and unload Ollama models while a game runs |
 | `busyProcesses` | `[]` | Exe names (`GTA5.exe`) or folders (`D:\Games\`) that count as a game |
 | `busyPaths` / `busyIgnore` | game libraries / launchers | Folders whose programs count as games, and exceptions |
