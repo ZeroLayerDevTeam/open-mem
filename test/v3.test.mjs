@@ -144,6 +144,15 @@ test('branch warning: merged branch, branch with own commits, default branch', (
   assert.match(branchWarning(repo, 'old'), /already merged into origin\/main \(1 commit\(s\) behind it\): switch back with `git switch main && git pull`/);
 });
 
+test('every source file parses (the CLI and hooks are not all imported by the tests)', () => {
+  const root = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/(\w:)/, '$1')), '..');
+  for (const dir of ['src', 'web']) {
+    for (const f of fs.readdirSync(path.join(root, dir)).filter((n) => /\.m?js$/.test(n))) {
+      execFileSync(process.execPath, ['--check', path.join(root, dir, f)], { stdio: 'pipe' });
+    }
+  }
+});
+
 test('export: notes and tasks as Markdown', () => {
   const md = itemsMarkdown('infra', [
     { id: 1, kind: 'note', title: 'Use pnpm', body: 'never npm', status: 'active', tags: '["tools"]', updated_at: Date.UTC(2026, 9, 1), priority: 2 },

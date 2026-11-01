@@ -133,8 +133,7 @@ async function main() {
       const provider = await resolveProvider(settings);
       if (provider.kind === 'none') throw new Error(`no LLM available: ${provider.reason}`);
       const flags = await reviewNotes(db, args.join(' '), provider, settings);
-      console.log(flags.length ? flags.map((f) => `${f.ids.join(', ')} ${f.kind}: ${f.reason}`).join('
-') : 'nothing to fix');
+      console.log(flags.length ? flags.map((f) => `${f.ids.join(', ')} ${f.kind}: ${f.reason}`).join('\n') : 'nothing to fix');
     } else if (cmd === 'embed') {
       const all = flag(args, '--all');
       const n = await embedPending(db, settings, { max: all ? Number.MAX_SAFE_INTEGER : settings.embedPerDrain });
