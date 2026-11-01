@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.1
 
 - A scheduled drain of `serve` that outlasted `serveDrainMinutes` no longer overlaps with the next one: `serve` drains inside its own process and the lock took its own pid for a dead process, so the next tick stole it and repeated the LLM work on the same GPU.
 - The daily lessons review skips projects whose bug fixes come from a single session: a lesson needs two sessions, so that LLM call could only be wasted.
