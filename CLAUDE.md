@@ -38,3 +38,5 @@ Claude Code plugin (id `open-mem`, marketplace `claude-open-mem`): local persist
 - `node:sqlite` binds JS numbers as REAL: `(at - ?) / ?` is a fraction, wrap bucket math in `CAST(... AS INTEGER)`.
 - Never print or paste the admin token / device keys in a transcript: pipe `device add --raw` into `remote connect`, and let the user run `token init|reset` themselves.
 - `nvidia-smi` is not always on PATH (old Windows drivers, WSL): `gpu.mjs` also tries the driver's install paths.
+- SQLite cannot lock a file on a network share (SMB/CIFS): VACUUM INTO straight onto one hangs or fails with "database is locked". `backupDb` builds the copy in the data folder, then moves it.
+- `python - <<EOF` edits in Git Bash on Windows rewrite the whole file with CRLF and turn `'\n'` in the source into real line breaks: edit with Edit or a node script.
