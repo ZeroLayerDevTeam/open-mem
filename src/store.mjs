@@ -113,11 +113,12 @@ const TABLES = {
   item: { table: 'items', fts: 'items_fts', alias: 'i', type: 'i.kind', title: 'i.title', time: 'i.updated_at' },
 };
 
-function searchTable(db, kind, o, mode) {
+// FROM + WHERE of one table for a normalized search; null when the query has no searchable term.
+function searchFilter(kind, o, mode) {
   const t = TABLES[kind];
   const params = [];
   const match = o.query ? ftsQuery(o.query, mode) : null;
-  if (o.query && !match) return [];
+  if (o.query && !match) return null;
   const where = match ? [`${t.fts} MATCH ?`] : [];
   if (match) params.push(match);
   if (o.project) { where.push(`${t.alias}.project = ? COLLATE NOCASE`); params.push(o.project); }
@@ -128,12 +129,17 @@ function searchTable(db, kind, o, mode) {
   if (start != null) { where.push(`${t.time} >= ?`); params.push(start); }
   if (end != null) { where.push(`${t.time} <= ?`); params.push(end); }
   const from = match ? `${t.fts} JOIN ${t.table} ${t.alias} ON ${t.alias}.id = ${t.fts}.rowid` : `${t.table} ${t.alias}`;
+  return { t, match, from: `${from} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`, params };
+}
+
+function searchTable(db, kind, o, mode) {
+  const f = searchFilter(kind, o, mode);
+  if (!f) return [];
+  const { t, match } = f;
   const sql = `SELECT ${t.alias}.id AS id, ${t.alias}.project AS project, ${t.type} AS type, ${t.title} AS title,
       ${t.time} AS created_at, ${match ? `bm25(${t.fts})` : '0'} AS rank
-    FROM ${from} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-    ORDER BY ${match ? 'rank' : `${t.time} DESC`} LIMIT ?`;
-  params.push(o.limit + o.offset);
-  return db.prepare(sql).all(...params).map((r) => ({ ...r, kind }));
+    FROM ${f.from} ORDER BY ${match ? 'rank' : `${t.time} DESC`} LIMIT ?`;
+  return db.prepare(sql).all(...f.params, o.limit + o.offset).map((r) => ({ ...r, kind }));
 }
 
 export function normalizeSearch(opts = {}) {
@@ -151,11 +157,27 @@ export function normalizeSearch(opts = {}) {
 
 const KIND_SETS = { all: ['obs', 'sum', 'item'], observations: ['obs'], summaries: ['sum'], items: ['item'], notes: ['item'], tasks: ['item'] };
 
-export function search(db, opts = {}) {
-  const o = normalizeSearch(opts);
+function searchKinds(o) {
   if (o.kind === 'notes') o.type = 'note';
   if (o.kind === 'tasks') o.type = 'task';
-  const kinds = (KIND_SETS[o.kind] || KIND_SETS.all).filter((k) => !(o.type && k === 'sum') && !(o.type && k === 'item' && !['note', 'task'].includes(o.type)) && !(o.type && k === 'obs' && ['note', 'task'].includes(o.type)));
+  return (KIND_SETS[o.kind] || KIND_SETS.all).filter((k) => !(o.type && k === 'sum') && !(o.type && k === 'item' && !['note', 'task'].includes(o.type)) && !(o.type && k === 'obs' && ['note', 'task'].includes(o.type)));
+}
+
+// How many records `search` can page through: every term first, any term when none matches all (as `search`).
+export function searchCount(db, opts = {}) {
+  const o = normalizeSearch(opts);
+  const kinds = searchKinds(o);
+  const count = (mode) => kinds.reduce((n, k) => {
+    const f = searchFilter(k, o, mode);
+    return n + (f ? db.prepare(`SELECT count(*) n FROM ${f.from}`).get(...f.params).n : 0);
+  }, 0);
+  const n = count('and');
+  return n || !o.query ? n : count('or');
+}
+
+export function search(db, opts = {}) {
+  const o = normalizeSearch(opts);
+  const kinds = searchKinds(o);
   const run = (mode) => {
     const rows = kinds.flatMap((k) => searchTable(db, k, o, mode));
     rows.sort(o.query ? (a, b) => a.rank - b.rank : (a, b) => b.created_at - a.created_at);

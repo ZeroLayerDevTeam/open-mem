@@ -10,12 +10,14 @@ import { local } from './backend.mjs';
 import { deleteItem, TASK_STATUSES } from './items.mjs';
 import { exportFileName, itemsMarkdown } from './export.mjs';
 import { ingest } from './sync.mjs';
-import { feed, overview, projectDetail, projects, record, sessionDetail, sessions } from './views.mjs';
+import { gzipSync } from 'node:zlib';
+import { facets, feed, find, itemsPage, overview, projectDetail, projects, record, sessionDetail, sessions } from './views.mjs';
 
 const WEB = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web');
 const STATIC = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
+  '/ui.js': ['ui.js', 'text/javascript; charset=utf-8'],
   '/i18n.js': ['i18n.js', 'text/javascript; charset=utf-8'],
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
   '/icon.svg': ['icon.svg', 'image/svg+xml'],
@@ -33,10 +35,17 @@ class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 
+// Bodies over 1 KB are gzipped when the client accepts it (pages of 50 records shrink about 5x).
 function send(res, status, body, headers = {}) {
   const isJson = typeof body !== 'string' && !Buffer.isBuffer(body);
-  res.writeHead(status, { ...SECURITY_HEADERS, ...(isJson ? { 'content-type': 'application/json; charset=utf-8' } : {}), ...headers });
-  res.end(isJson ? JSON.stringify(body) : body);
+  let data = isJson ? JSON.stringify(body) : body;
+  const zip = data.length > 1024 && /\bgzip\b/.test(String(res.req?.headers['accept-encoding'] || ''));
+  if (zip) data = gzipSync(data);
+  res.writeHead(status, {
+    ...SECURITY_HEADERS, ...(isJson ? { 'content-type': 'application/json; charset=utf-8' } : {}), ...headers,
+    ...(zip ? { 'content-encoding': 'gzip', vary: 'accept-encoding' } : {}),
+  });
+  res.end(data);
 }
 
 function readBody(req, limit) {
@@ -107,14 +116,20 @@ function checkOrigin(req) {
 }
 
 const num = (v, d) => (v == null || v === '' ? d : Number(v));
+const pageOf = (q) => ({ page: num(q.get('page')), pageSize: num(q.get('size')) });
 
 export function createServer(db, settings) {
   const getRoutes = {
     '/api/overview': () => overview(db, settings),
     '/api/projects': () => projects(db),
     '/api/project': (q) => projectDetail(db, q.get('name')) ?? (() => { throw new HttpError(404, 'unknown project'); })(),
-    '/api/feed': (q) => feed(db, { project: q.get('project'), kinds: q.get('kinds') || undefined, device: q.get('device'), before: num(q.get('before')), limit: num(q.get('limit'), 60) }),
-    '/api/sessions': (q) => sessions(db, { project: q.get('project'), before: num(q.get('before')), limit: num(q.get('limit'), 40) }),
+    '/api/facets': () => facets(db),
+    '/api/feed': (q) => feed(db, { project: q.get('project'), kinds: q.get('kinds') || undefined, device: q.get('device'), before: num(q.get('before')), ...pageOf(q) }),
+    '/api/sessions': (q) => sessions(db, { project: q.get('project'), device: q.get('device'), q: q.get('q'), ...pageOf(q) }),
+    '/api/items': (q) => itemsPage(db, { kind: q.get('kind'), project: q.get('project'), status: q.get('status'), q: q.get('q'), ...pageOf(q) }),
+    '/api/find': (q) => find(db, {
+      query: q.get('q'), project: q.get('project'), kind: q.get('kind') || 'all', type: q.get('type'), dateStart: q.get('from'), dateEnd: q.get('to'), ...pageOf(q),
+    }, settings),
     '/api/session': (q) => sessionDetail(db, q.get('id')) ?? (() => { throw new HttpError(404, 'unknown session'); })(),
     '/api/record': (q) => record(db, q.get('ref')) ?? (() => { throw new HttpError(404, 'unknown record'); })(),
     '/api/meta': () => ({ version: VERSION, taskStatuses: TASK_STATUSES }),
@@ -165,7 +180,7 @@ export function createServer(db, settings) {
         'content-type': 'text/markdown; charset=utf-8', 'content-disposition': `attachment; filename="${exportFileName(project)}"`,
       });
     }
-    if (req.method === 'GET' && getRoutes[route]) return send(res, 200, getRoutes[route](url.searchParams));
+    if (req.method === 'GET' && getRoutes[route]) return send(res, 200, await getRoutes[route](url.searchParams));
     if (req.method !== 'POST') throw new HttpError(404, 'not found');
     if (who.kind === 'admin') checkOrigin(req);
 

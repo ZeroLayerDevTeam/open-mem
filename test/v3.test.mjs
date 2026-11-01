@@ -76,6 +76,12 @@ test('hybrid search finds records by meaning and falls back to full-text', async
     const rows = await semantic.hybridSearch(db, { query: 'gpu' }, settings);
     assert.equal(rows[0].id, gpu);
     assert.ok((await semantic.hybridSearch(db, { query: 'gpu', project: 'infra' }, settings)).every((r) => r.project === 'infra'));
+    // Pages rank the same fused pool: page 2 continues page 1 instead of restarting the full-text list.
+    for (let i = 0; i < 4; i++) store.insertObservation(db, { project: 'games', title: `gpu note ${i}`, created_at: 10 + i });
+    await semantic.embedPending(db, settings);
+    const whole = (await semantic.hybridSearch(db, { query: 'gpu', limit: 4 }, settings)).map(store.refId);
+    const paged = [0, 2].map((offset) => semantic.hybridSearch(db, { query: 'gpu', limit: 2, offset }, settings));
+    assert.deepEqual((await Promise.all(paged)).flat().map(store.refId), whole);
     // A game running (cached busy answer): no embedding call, full-text only.
     const before = o.calls.embed;
     setMeta(db, 'busy_seen_at', Date.now());

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Web viewer redesign: responsive layout from phone to wide screen (off-canvas menu, stacked tables, no horizontal scroll), a search box in the top bar on every page (`/` focuses it), record side panel as a modal dialog, toasts after saving, skeletons while loading, a year-long activity map, project paths shown from the project folder.
+- Server-side pagination with numbered pages for the timeline, sessions, notes and search (`page`, `size`; responses carry `total`). The page and filters live in the URL.
+- Sessions are built from the records themselves, so the sessions imported from claude-mem are listed and open prompt by prompt (before, only sessions started with open-mem appeared). A session that touched several projects counts for each.
+- Search page: kind, project, type and date filters, highlighted matches, an excerpt per result, recent searches. Hybrid search pages rank the same fused pool, so page 2 continues page 1 (up to 100 results, plain full-text after that). New `searchCount` in `store.mjs`.
+- New read routes: `/api/facets` (filter menus), `/api/items` (paged notes and tasks with full-text filter), `/api/find` (paged search); `/api/feed` and `/api/sessions` now page by number.
+- Speed: schema v4 adds indexes for sessions, the timeline and machines (the machines list went from 180 ms to 6 ms on a 48k-record database); timeline pages read only (kind, id, time) before loading the page's rows (about 5 ms for any page); JSON and static files over 1 KB are gzipped.
+
 ## 0.4.0
 
 - Web viewer in English and Spanish (`web/i18n.js`): follows the browser language until one is picked; dates and

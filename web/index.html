@@ -2,48 +2,99 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F3F5F8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0F151B" media="(prefers-color-scheme: dark)">
 <title>open-mem</title>
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/style.css">
+<link rel="modulepreload" href="/i18n.js">
+<link rel="modulepreload" href="/ui.js">
 <script src="/app.js" type="module"></script>
 </head>
 <body>
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-progress" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.5h7.5A2.5 2.5 0 0 1 21 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/></symbol>
+  <symbol id="i-timeline" viewBox="0 0 24 24"><path d="M6 3v18"/><circle cx="6" cy="7" r="2"/><circle cx="6" cy="17" r="2"/><path d="M11 7h9M11 17h6M11 12h7"/></symbol>
+  <symbol id="i-tasks" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="3.5"/><path d="m8.5 12.5 2.5 2.5 4.5-5.5"/></symbol>
+  <symbol id="i-notes" viewBox="0 0 24 24"><path d="M14 3H6.5A2.5 2.5 0 0 0 4 5.5v13A2.5 2.5 0 0 0 6.5 21h11a2.5 2.5 0 0 0 2.5-2.5V9z"/><path d="M14 3v6h6M8 13h8M8 17h5"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol>
+  <symbol id="i-sessions" viewBox="0 0 24 24"><path d="M20.5 14.5a2.5 2.5 0 0 1-2.5 2.5H8l-4.5 4V5.5A2.5 2.5 0 0 1 6 3h12a2.5 2.5 0 0 1 2.5 2.5z"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6.5h16M4 12h16M4 17.5h16"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+  <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-chevron-up" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-device" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="12.5" rx="2"/><path d="M8 20.5h8M12 16.5v4"/></symbol>
+  <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.5"/><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="7" r="2.5"/><path d="M6 8.5v7M18 9.5c0 4.5-5 5-10.5 7"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11.5" height="11.5" rx="2"/><path d="M5.5 15H5a1.5 1.5 0 0 1-1.5-1.5V5A1.5 1.5 0 0 1 5 3.5h8.5A1.5 1.5 0 0 1 15 5v.5"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3.5v11.5M7 10l5 5 5-5M4.5 20.5h15"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9.5 20.5H6A2.5 2.5 0 0 1 3.5 18V6A2.5 2.5 0 0 1 6 3.5h3.5M15.5 16.5 20 12l-4.5-4.5M20 12H9.5"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m5 16.5 5-4.5-5-4.5M12.5 18h6.5"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6.5A2.5 2.5 0 0 0 4 5.5v13A2.5 2.5 0 0 0 6.5 21h11a2.5 2.5 0 0 0 2.5-2.5V9z"/><path d="M14 3v6h6"/></symbol>
+  <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="M19 12H5m6 6.5L4.5 12 11 5.5"/></symbol>
+</svg>
+
 <div id="login" class="login" hidden>
   <form id="login-form" class="login-card">
-    <h1 class="wordmark">open-mem</h1>
-    <p data-i18n="Paste the admin token printed when the plugin was installed.">Paste the admin token printed when the plugin was installed.</p>
-    <label for="token" data-i18n="Admin token">Admin token</label>
+    <img class="login-mark" src="/icon.svg" alt="" width="48" height="48">
+    <h1 data-i18n="Sign in to open-mem">Sign in to open-mem</h1>
+    <p class="muted" data-i18n="Paste the admin token printed when the plugin was installed.">Paste the admin token printed when the plugin was installed.</p>
+    <label class="field-label" for="token" data-i18n="Admin token">Admin token</label>
     <input id="token" name="token" type="password" autocomplete="current-password" spellcheck="false" required placeholder="om_admin_…">
-    <button type="submit" data-i18n="Log in">Log in</button>
-    <p id="login-error" class="error" role="alert"></p>
+    <button type="submit" class="btn primary" data-i18n="Log in">Log in</button>
+    <p id="login-error" class="form-error" role="alert"></p>
     <p class="hint" data-i18n-html="Lost it? Run &lt;code&gt;token reset&lt;/code&gt; with the open-mem CLI on the machine that holds the database.">Lost it? Run <code>token reset</code> with the open-mem CLI on the machine that holds the database.</p>
     <div class="prefs"><select data-pref="lang" data-i18n-aria="Language" aria-label="Language"></select><select data-pref="theme" data-i18n-aria="Theme" aria-label="Theme"></select></div>
   </form>
 </div>
 
-<div id="app" class="app" hidden>
-  <nav class="rail" aria-label="Sections" data-i18n-aria="Sections">
-    <a class="wordmark" href="#/overview">open-mem</a>
-    <ul>
-      <li><a href="#/overview" data-nav="overview" data-i18n="Progress">Progress</a></li>
-      <li><a href="#/projects" data-nav="projects" data-i18n="Projects">Projects</a></li>
-      <li><a href="#/timeline" data-nav="timeline" data-i18n="Timeline">Timeline</a></li>
-      <li><a href="#/tasks" data-nav="tasks" data-i18n="Tasks">Tasks</a></li>
-      <li><a href="#/notes" data-nav="notes" data-i18n="Notes">Notes</a></li>
-      <li><a href="#/search" data-nav="search" data-i18n="Search">Search</a></li>
-      <li><a href="#/sessions" data-nav="sessions" data-i18n="Sessions">Sessions</a></li>
+<div id="app" class="shell" hidden>
+  <nav id="side" class="side" aria-label="Sections" data-i18n-aria="Sections">
+    <a class="brand" href="#/overview"><img src="/icon.svg" alt="" width="28" height="28"><span>open-mem</span></a>
+    <ul class="nav">
+      <li><a href="#/overview" data-nav="overview"><svg class="i" aria-hidden="true"><use href="#i-progress"/></svg><span data-i18n="Progress">Progress</span></a></li>
+      <li><a href="#/projects" data-nav="projects"><svg class="i" aria-hidden="true"><use href="#i-folder"/></svg><span data-i18n="Projects">Projects</span></a></li>
+      <li><a href="#/timeline" data-nav="timeline"><svg class="i" aria-hidden="true"><use href="#i-timeline"/></svg><span data-i18n="Timeline">Timeline</span></a></li>
+      <li><a href="#/sessions" data-nav="sessions"><svg class="i" aria-hidden="true"><use href="#i-sessions"/></svg><span data-i18n="Sessions">Sessions</span></a></li>
+      <li><a href="#/tasks" data-nav="tasks"><svg class="i" aria-hidden="true"><use href="#i-tasks"/></svg><span data-i18n="Tasks">Tasks</span></a></li>
+      <li><a href="#/notes" data-nav="notes"><svg class="i" aria-hidden="true"><use href="#i-notes"/></svg><span data-i18n="Notes">Notes</span></a></li>
+      <li><a href="#/search" data-nav="search"><svg class="i" aria-hidden="true"><use href="#i-search"/></svg><span data-i18n="Search">Search</span></a></li>
     </ul>
-    <div class="prefs"><select data-pref="lang" data-i18n-aria="Language" aria-label="Language"></select><select data-pref="theme" data-i18n-aria="Theme" aria-label="Theme"></select></div>
-    <button id="logout" class="link" data-i18n="Log out">Log out</button>
+    <div class="side-foot">
+      <div class="prefs"><select data-pref="lang" data-i18n-aria="Language" aria-label="Language"></select><select data-pref="theme" data-i18n-aria="Theme" aria-label="Theme"></select></div>
+      <button id="logout" class="btn ghost small" type="button"><svg class="i" aria-hidden="true"><use href="#i-logout"/></svg><span data-i18n="Log out">Log out</span></button>
+      <p class="version" id="version"></p>
+    </div>
   </nav>
+  <div id="scrim" class="scrim" hidden></div>
+  <header class="topbar">
+    <button id="menu" class="icon-btn menu-btn" type="button" aria-controls="side" aria-expanded="false" aria-label="Menu" data-i18n-aria="Menu"><svg class="i" aria-hidden="true"><use href="#i-menu"/></svg></button>
+    <a class="brand topbar-brand" href="#/overview"><img src="/icon.svg" alt="" width="24" height="24"><span>open-mem</span></a>
+    <form id="omni" class="omni" role="search">
+      <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+      <input id="omni-input" type="search" name="q" autocomplete="off" spellcheck="false" placeholder="Search memory" data-i18n-placeholder="Search memory" aria-label="Search memory" data-i18n-aria="Search memory">
+      <kbd aria-hidden="true">/</kbd>
+    </form>
+  </header>
   <main id="view" tabindex="-1"></main>
 </div>
 
-<aside id="drawer" class="drawer" hidden aria-label="Record detail" data-i18n-aria="Record detail">
-  <button id="drawer-close" class="drawer-close" aria-label="Close" data-i18n-aria="Close">×</button>
-  <div id="drawer-body"></div>
-</aside>
+<dialog id="drawer" class="drawer" aria-labelledby="drawer-title">
+  <header class="drawer-head">
+    <p id="drawer-title" class="drawer-ref"></p>
+    <button id="drawer-copy" class="icon-btn" type="button" aria-label="Copy reference" data-i18n-aria="Copy reference" hidden><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg></button>
+    <button id="drawer-close" class="icon-btn" type="button" aria-label="Close" data-i18n-aria="Close"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg></button>
+  </header>
+  <div id="drawer-body" class="drawer-body"></div>
+</dialog>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<div class="loadbar" aria-hidden="true"></div>
 </body>
 </html>

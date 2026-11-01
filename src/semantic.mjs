@@ -8,6 +8,7 @@ export const DIM = 256;
 const QUERY_TIMEOUT_MS = 3000;
 const RRF_K = 60;
 const POOL = 60;
+const MAX_POOL = 100; // search() returns at most 100 rows per call
 
 const baseUrl = (settings) => (settings.baseUrl || 'http://127.0.0.1:11434').replace(/\/+$/, '');
 // Embeddings need Ollama: a local one in auto/ollama mode, never an OpenAI-compatible endpoint.
@@ -148,19 +149,21 @@ const KINDS = { all: ['obs', 'sum', 'item'], observations: ['obs'], summaries: [
 export async function hybridSearch(db, opts, settings = {}) {
   const o = normalizeSearch(opts);
   const fts = () => search(db, opts);
-  if (!o.query || !embedEnabled(settings) || o.offset) return fts();
+  // Later pages rank the same fused pool, so paging never skips or repeats a record (full-text past MAX_POOL).
+  const pool = Math.max(POOL, o.offset + o.limit);
+  if (!o.query || !embedEnabled(settings) || pool > MAX_POOL) return fts();
   if (Date.now() - Number(getMeta(db, 'busy_seen_at') || 0) < 60000) return fts();
   if (!db.prepare('SELECT 1 FROM embeddings WHERE model = ? LIMIT 1').get(settings.embedModel)) return fts();
   let q;
   try { [q] = await embed(settings, [o.query], QUERY_TIMEOUT_MS); } catch { return fts(); }
   const kind = o.kind === 'notes' ? 'notes' : o.kind === 'tasks' ? 'tasks' : o.kind;
   const type = o.kind === 'notes' ? 'note' : o.kind === 'tasks' ? 'task' : o.type;
-  const textRows = search(db, { ...opts, limit: POOL, offset: 0 });
+  const textRows = search(db, { ...opts, limit: pool, offset: 0 });
   const vecRows = [];
-  for (const [, ref] of nearest(db, settings.embedModel, q, new Set(KINDS[kind] || KINDS.all), POOL * 3)) {
+  for (const [, ref] of nearest(db, settings.embedModel, q, new Set(KINDS[kind] || KINDS.all), pool * 3)) {
     const row = rowFor(db, ref, { ...o, type });
     if (row) vecRows.push(row);
-    if (vecRows.length >= POOL) break;
+    if (vecRows.length >= pool) break;
   }
   const score = new Map();
   const add = (rows) => rows.forEach((r, i) => {
@@ -171,5 +174,5 @@ export async function hybridSearch(db, opts, settings = {}) {
   });
   add(textRows);
   add(vecRows);
-  return [...score.values()].sort((a, b) => b.s - a.s).slice(0, o.limit).map((x) => x.row);
+  return [...score.values()].sort((a, b) => b.s - a.s).slice(o.offset, o.offset + o.limit).map((x) => x.row);
 }
