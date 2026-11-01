@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.3
 
 - Wake-on-LAN for a shared server whose Ollama runs on another machine (`wakeMac`, `wakeBroadcast`, `wakeOffMinutes`, `wakeOffCommand`, new `src/wake.mjs`). Every 30 s `cli serve` checks: queued work and the LLM not answering sends a magic packet (again after 5 minutes if still asleep); once the LLM answers it starts a drain; `wakeOffMinutes` after the last LLM call it runs `wakeOffCommand`. Only a machine the server woke is turned off, and the command decides whether it is in use (exit 3 leaves it on).
 
