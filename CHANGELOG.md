@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+
+- Fix: a newline literal in `cli.mjs` stopped the CLI and the server from starting in 0.3.0. A test now parses every
+  source file.
+
 ## 0.3.0
 
 - Semantic search: records get Ollama embeddings (`embedModel`, default `embeddinggemma`) after each drain; search
