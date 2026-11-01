@@ -20,6 +20,7 @@ import { reportGpu } from './gpu.mjs';
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cli.mjs');
 const STALE_CLAIM_MS = 10 * 60 * 1000;
 const MAX_ATTEMPTS = 3;
+const PUSH_EVERY_MS = 2 * 60 * 1000;
 const NO_LLM = { kind: 'none' };
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
@@ -292,10 +293,14 @@ async function upkeep(db, touched, provider, settings, checkBusy) {
 
 // Processes the queue until empty. Returns number of items handled.
 // `force`: process even while a game runs (asked for from the web viewer).
-export async function drain(db, settings, { lock = true, provider: forced, sync = true, busy: isBusy = busyReason, force = false } = {}) {
+export async function drain(db, settings, { lock = true, provider: forced, sync = true, busy: isBusy = busyReason, force = false, pushEveryMs = PUSH_EVERY_MS, push = pushPending } = {}) {
   if (lock && !acquireLock()) return 0;
   let handled = 0;
   const touched = new Set();
+  const shared = settings.mode === 'remote' && settings.serverUrl && sync;
+  const pushNow = async () => {
+    try { await push(db, settings); } catch (err) { log('warn', `sync failed, will retry: ${err.message}`); }
+  };
   try {
     const provider = withRecorder(db, forced || await resolveProvider(settings));
     if (provider.kind !== 'none') setMeta(db, 'llm_seen_at', Date.now());
@@ -319,6 +324,7 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
     };
     let busy = await checkBusy();
     let busyCheckedAt = Date.now();
+    let pushedAt = Date.now();
     for (let item = busy ? null : claim(db, cutoff); item; item = claim(db, cutoff)) {
       if (Date.now() - busyCheckedAt > BUSY_RECHECK_MS) {
         busyCheckedAt = Date.now();
@@ -326,6 +332,11 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
           db.prepare("UPDATE queue SET status = 'pending', attempts = attempts - 1 WHERE id = ?").run(item.id);
           break;
         }
+      }
+      // Sessions can fill the queue as fast as it drains: new records must not wait for it to empty.
+      if (shared && Date.now() - pushedAt >= pushEveryMs) {
+        await pushNow();
+        pushedAt = Date.now();
       }
       touched.add(item.project);
       const run = (p) => (item.kind === 'observation' ? processObservation(db, item, p, settings)
@@ -361,8 +372,8 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
       log('info', `drain paused while ${busy} runs (${n} queue item(s) waiting)`);
       try { await unloadOllama(provider.baseUrl); } catch { /* Ollama already gone */ }
     } else await upkeep(db, touched, provider, settings, checkBusy);
-    if (settings.mode === 'remote' && settings.serverUrl && sync) {
-      try { await pushPending(db, settings); } catch (err) { log('warn', `sync failed, will retry: ${err.message}`); }
+    if (shared) {
+      await pushNow();
       // This machine runs the LLM: its GPU is the one the server's LLM page should show.
       if (provider.kind === 'ollama') {
         try { await reportGpu(db, (method, route, body) => remoteFetch(settings, method, route, body)); } catch (err) { log('warn', `GPU report failed: ${err.message}`); }

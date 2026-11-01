@@ -97,7 +97,7 @@ node "$OM" device add laptop              # prints a device key once
 node "$OM" remote connect --url http://server:37800 --name laptop < keyfile
 ```
 
-Clients keep writing to their own database (an outbox), compress with their own LLM, and push new rows after each drain. Reads, notes and tasks go to the server; if it is unreachable they fall back to the local copy and sync later. `remote disconnect` returns to local mode.
+Clients keep writing to their own database (an outbox), compress with their own LLM, and push new rows after each drain and every 2 minutes during a long one. Reads, notes and tasks go to the server; if it is unreachable they fall back to the local copy and sync later. `remote disconnect` returns to local mode.
 
 ### A server without a GPU
 
