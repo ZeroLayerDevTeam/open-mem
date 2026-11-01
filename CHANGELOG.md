@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.1
 
 - Local LLM page: `nvidia-smi` is also looked up where the NVIDIA driver installs it when it is not on PATH
   (`System32`, `Program Files\NVIDIA Corporation\NVSMI`, `/usr/lib/wsl/lib`). The GPU panel tells "nvidia-smi not
