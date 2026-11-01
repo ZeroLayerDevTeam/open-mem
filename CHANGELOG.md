@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2
+
+- Web task boards: cards move with pointer events instead of HTML5 drag and drop, which never fired on touch screens
+  and stalled in some browsers. On a phone, hold a card for a moment, then drag it. The drag handlers are bound once
+  instead of once per page render.
+
 ## 0.3.1
 
 - Fix: a newline literal in `cli.mjs` stopped the CLI and the server from starting in 0.3.0. A test now parses every

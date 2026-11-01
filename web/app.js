@@ -288,35 +288,67 @@ async function projectOptions(selected) {
   return html`<option value="">No project</option>${projects.map((p) => html`<option ${p.project === selected ? raw('selected') : ''}>${p.project}</option>`)}`;
 }
 
-const taskCard = (t, showProject) => html`<li class="task p${t.priority}" draggable="true" data-id="${t.id}"><span class="t" data-ref="I${t.id}">${t.title}</span>
+const taskCard = (t, showProject) => html`<li class="task p${t.priority}" data-drag="1" data-id="${t.id}"><span class="t" data-ref="I${t.id}">${t.title}</span>
   <div class="meta">${refLink(`I${t.id}`)}${showProject && t.project ? html`<span>${t.project}</span>` : ''}${t.due_at ? html`<span>due ${dayOf(t.due_at)}</span>` : ''}<span>${ago(t.updated_at)}</span></div></li>`;
 
-// Drag a card to another column to change its status.
+// Drag a card to another column of its board to change its status. Pointer events, not HTML5 drag and drop: those
+// never fire on touch screens and stall in some embedded browsers. Mouse: drag past a few pixels. Touch: hold the
+// card for a moment, then drag (a plain swipe keeps scrolling the page). Bound once on the view; acts on any board.
+let dragBound = false;
 function enableDrag(root) {
-  let dragged = null;
-  root.addEventListener('dragstart', (e) => {
-    const li = e.target.closest('li[data-id]');
-    if (!li) return;
-    dragged = li.dataset.id;
-    e.dataTransfer.setData('text/plain', dragged);
-    e.dataTransfer.effectAllowed = 'move';
-    li.classList.add('dragging');
-  });
-  root.addEventListener('dragend', (e) => { e.target.closest('li')?.classList.remove('dragging'); for (const c of root.querySelectorAll('.drop')) c.classList.remove('drop'); });
-  root.addEventListener('dragover', (e) => {
-    const col = e.target.closest('[data-status]');
-    if (!col || !dragged) return;
-    e.preventDefault();
+  if (dragBound) return;
+  dragBound = true;
+  let drag = null;
+  const columnAt = (x, y) => document.elementFromPoint(x, y)?.closest('[data-status]');
+  const mark = (col) => {
     for (const c of root.querySelectorAll('.drop')) if (c !== col) c.classList.remove('drop');
-    col.classList.add('drop');
+    if (col && col.closest('.board') === drag.board && col !== drag.from) col.classList.add('drop');
+  };
+  const start = () => {
+    drag.active = true;
+    drag.li.classList.add('dragging');
+    try { drag.li.setPointerCapture(drag.pointer); } catch { /* pointer already gone */ }
+  };
+  const end = () => {
+    if (!drag) return;
+    clearTimeout(drag.hold);
+    drag.li.classList.remove('dragging');
+    for (const c of root.querySelectorAll('.drop')) c.classList.remove('drop');
+    drag = null;
+  };
+  root.addEventListener('pointerdown', (e) => {
+    const li = e.target.closest('li[data-drag]');
+    if (!li || e.button !== 0 || e.target.closest('a')) return;
+    const from = li.closest('[data-status]');
+    drag = { li, from, board: from?.closest('.board'), pointer: e.pointerId, x: e.clientX, y: e.clientY, active: false, touch: e.pointerType === 'touch' };
+    if (drag.touch) drag.hold = setTimeout(() => drag && start(), 350);
   });
-  root.addEventListener('drop', async (e) => {
-    const col = e.target.closest('[data-status]');
-    if (!col || !dragged) return;
+  root.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.pointer) return;
+    const moved = Math.hypot(e.clientX - drag.x, e.clientY - drag.y);
+    if (!drag.active) {
+      if (drag.touch) { if (moved > 8) end(); return; } // a swipe before the hold: let the page scroll
+      if (moved < 6) return;
+      start();
+    }
     e.preventDefault();
-    const id = Number(dragged);
-    dragged = null;
-    try { await api('/api/items/update', { id, patch: { status: col.dataset.status } }); } catch (err) { alertLine(err.message); }
+    mark(columnAt(e.clientX, e.clientY));
+  });
+  // While a touch drag is active the page must not scroll under the finger.
+  root.addEventListener('touchmove', (e) => { if (drag?.active) e.preventDefault(); }, { passive: false });
+  root.addEventListener('pointercancel', end);
+  root.addEventListener('pointerup', async (e) => {
+    if (!drag || e.pointerId !== drag.pointer) return;
+    const { active, li, from, board } = drag;
+    const col = active ? columnAt(e.clientX, e.clientY) : null;
+    end();
+    if (!active) return;
+    // The click that ends a drag must not open the card's side panel.
+    const swallow = (c) => { c.stopPropagation(); c.preventDefault(); };
+    root.addEventListener('click', swallow, { capture: true, once: true });
+    setTimeout(() => root.removeEventListener('click', swallow, { capture: true }), 0);
+    if (!col || col === from || col.closest('.board') !== board) return;
+    try { await api('/api/items/update', { id: Number(li.dataset.id), patch: { status: col.dataset.status } }); } catch (err) { alertLine(err.message); }
     route();
   });
 }
