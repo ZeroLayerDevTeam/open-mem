@@ -54,6 +54,10 @@ A detached background process drains the queue: the LLM decides whether a tool c
 a structured observation (title, narrative, facts, concepts, files). At the end of each turn it writes a summary, and
 every `briefEvery` new records it rewrites the project brief. If the LLM is unreachable, items wait in the queue.
 
+**Gaming:** a local model and a game fight over the same GPU. While a game runs (anything under Steam, Epic, Xbox,
+EA, GOG, Riot or Ubisoft game folders, plus whatever you list in `busyProcesses`), the queue waits and the Ollama
+models are unloaded; it drains once the game closes. `node "$OM" busy` shows what is detected.
+
 ### Tools Claude gets (MCP)
 
 | Tool | Use |
@@ -114,6 +118,7 @@ node "$OM" import                 # import new claude-mem rows (safe to repeat)
 node "$OM" search nginx certs     # search from the terminal
 node "$OM" brief my-project       # rewrite a project brief now
 node "$OM" drain | sync           # process the queue / push to the server now
+node "$OM" busy [--unload]        # is a game running? (exit 0 = busy)
 node "$OM" serve | token init | token reset | device add|list|remove | remote connect|disconnect
 node "$OM" config [set key value]
 ```
@@ -159,6 +164,10 @@ claude-open-mem never deletes claude-mem data.
 | `webHost` / `webPort` / `webAutostart` | `127.0.0.1` / 37800 / `true` | Web viewer |
 | `maxToolChars` | 6000 | Tool output sent to the LLM |
 | `llmWaitHours` | 72 | How long queued calls wait for an LLM that is down before being stored without it |
+| `llmKeepAlive` | `30s` | How long Ollama keeps the model loaded after the last call |
+| `pauseWhenBusy` | `true` | Pause the queue and unload Ollama models while a game runs |
+| `busyProcesses` | `[]` | Exe names (`GTA5.exe`) or folders (`D:\Games\`) that count as a game |
+| `busyPaths` / `busyIgnore` | game libraries / launchers | Folders whose programs count as games, and exceptions |
 
 Set `CLAUDE_OPEN_MEM_DATA_DIR` to move the data folder.
 

@@ -5,7 +5,8 @@ import { addDevice, createAdminToken, hasAdminToken, listDevices, removeDevice }
 import { DEFAULT_SETTINGS, dataDir, dataPath, deviceName, loadSettings, log, saveSettings, VERSION } from './config.mjs';
 import { openDb } from './db.mjs';
 import { claudeMemDbPath, installedPluginIds, importClaudeMem, uninstallClaudeMem } from './claudemem.mjs';
-import { resolveProvider } from './llm.mjs';
+import { busyReason } from './busy.mjs';
+import { resolveProvider, unloadOllama } from './llm.mjs';
 import { drain, generateBrief } from './queue.mjs';
 import { serve } from './server.mjs';
 import { formatIndex, redactExisting, search, stats } from './store.mjs';
@@ -17,6 +18,7 @@ Usage: node cli.mjs <command> [options]
   status                         Database counts, LLM provider, mode, claude-mem detection
   import [--quiet]               Import new rows from claude-mem (read-only, incremental)
   drain                          Process the pending queue now
+  busy [--unload]                Is a game running? (exit 0 = busy) --unload frees the Ollama models then
   search <query> [--project P]   Search memory from the terminal
   redact                         Re-scan stored memory and redact secrets
   brief <project>                Regenerate a project's brief now (needs an LLM)
@@ -104,6 +106,14 @@ async function main() {
     } else if (cmd === 'drain') {
       const n = await drain(db, settings);
       log('info', `drain handled ${n} items`);
+    } else if (cmd === 'busy') {
+      const reason = await busyReason(settings);
+      let unloaded = [];
+      if (reason && flag(args, '--unload') && ['auto', 'ollama'].includes(settings.provider || 'auto')) {
+        try { unloaded = await unloadOllama(settings.baseUrl); } catch { /* Ollama not running */ }
+      }
+      console.log(reason ? `busy: ${reason}${unloaded.length ? ` (unloaded ${unloaded.join(', ')})` : ''}` : 'idle');
+      process.exitCode = reason ? 0 : 1;
     } else if (cmd === 'search') {
       const project = option(args, '--project');
       console.log(formatIndex(search(db, { query: args.join(' '), project, limit: 30 })));

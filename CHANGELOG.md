@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.5
+
+- Game guard: while a game runs (`busyProcesses` exe names or folders, `busyPaths` game library folders such as
+  `steamapps/common`), the queue waits and the Ollama models are unloaded, so the local LLM takes no VRAM or GPU
+  time from it. `busyIgnore` skips launchers; `pauseWhenBusy false` turns it off.
+- Ollama requests send `keep_alive` (`llmKeepAlive`, default `30s`): the model leaves the GPU soon after a drain
+  instead of staying loaded for 5 minutes.
+- `cli busy [--unload]`: exit 0 while busy, for scripts (e.g. closing a tunnel that lends this GPU to a server).
+
 ## 0.2.4
 
 - Plugin icon (512 px PNG + SVG source in `.claude-plugin/`); the web viewer uses the same mark.

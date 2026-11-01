@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export const VERSION = '0.2.4';
+export const VERSION = '0.2.5';
 
 export const DEFAULT_SETTINGS = {
   // auto: use a local Ollama if reachable, otherwise store without an LLM.
@@ -16,6 +16,16 @@ export const DEFAULT_SETTINGS = {
   // Once an LLM has been seen, a queue item waits this long for it to come back before it is stored
   // without one (the no-LLM path keeps only edits and commands).
   llmWaitHours: 72,
+  // How long Ollama keeps the model in (V)RAM after the last call. Short, so the GPU is free soon after a drain.
+  llmKeepAlive: '30s',
+  // While one of these runs, the queue waits and the Ollama models are unloaded (no LLM work while gaming).
+  // busyProcesses: exe names (GTA5.exe) or path fragments (D:\Games\); busyPaths: game library folders.
+  pauseWhenBusy: true,
+  busyProcesses: [],
+  busyPaths: ['/steamapps/common/', '/Epic Games/', '/XboxGames/', '/Riot Games/', '/EA Games/', '/GOG Galaxy/Games/',
+    '/Ubisoft Game Launcher/games/'],
+  // Launchers and background apps that live in those folders but are not games.
+  busyIgnore: ['/wallpaper_engine/', '/Epic Games/Launcher/', '/Riot Games/Riot Client/'],
   // Tools whose calls are never recorded.
   skipTools: ['TodoWrite', 'AskUserQuestion', 'ListMcpResourcesTool', 'Skill', 'ToolSearch', 'SlashCommand'],
   maxToolChars: 6000,

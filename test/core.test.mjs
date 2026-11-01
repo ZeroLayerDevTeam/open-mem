@@ -13,6 +13,7 @@ process.env.CLAUDE_OPEN_MEM_DATA_DIR = path.join(TMP, 'data');
 
 const { saveSettings, DEFAULT_SETTINGS } = await import('../src/config.mjs');
 const { openDb } = await import('../src/db.mjs');
+const { matchBusy } = await import('../src/busy.mjs');
 const { importClaudeMem } = await import('../src/claudemem.mjs');
 const store = await import('../src/store.mjs');
 const { enqueue, drain } = await import('../src/queue.mjs');
@@ -118,6 +119,35 @@ test('queue waits for an LLM that is temporarily down instead of dropping reads'
   db.prepare('UPDATE queue SET created_at = ?').run(Date.now() - 73 * 3600000);
   assert.equal(await drain(db, settings, { lock: false, provider: down, sync: false }), 1);
   assert.equal(db.prepare('SELECT count(*) n FROM queue').get().n, 0);
+  db.close();
+});
+
+test('busy guard: games pause the queue and keep items', async () => {
+  const s = { ...DEFAULT_SETTINGS, busyProcesses: ['GTA5_Enhanced.exe', 'D:\\Juegos\\'] };
+  assert.equal(matchBusy(['C:\\Windows\\explorer.exe'], s), null);
+  assert.equal(matchBusy(['D:\\Grand Theft Auto V Enhanced\\GTA5_Enhanced.exe'], s), 'D:\\Grand Theft Auto V Enhanced\\GTA5_Enhanced.exe');
+  assert.ok(matchBusy(['D:\\Juegos\\x\\game.exe'], s));
+  assert.ok(matchBusy(['E:\\SteamLibrary\\steamapps\\common\\Foo\\foo.exe'], s));
+  assert.ok(matchBusy(['/home/u/.steam/steam/steamapps/common/Foo/foo'], s));
+  assert.equal(matchBusy(['C:\\Program Files (x86)\\Steam\\steamapps\\common\\wallpaper_engine\\wallpaper64.exe'], s), null);
+  assert.equal(matchBusy(['C:\\Program Files\\Epic Games\\Launcher\\Portal\\EpicGamesLauncher.exe'], s), null);
+  assert.equal(matchBusy(['C:\\x\\gta5_enhanced'], { ...s, busyProcesses: ['gta5_enhanced'] }), 'C:\\x\\gta5_enhanced');
+
+  const db = openDb();
+  db.prepare('DELETE FROM queue').run();
+  db.prepare("DELETE FROM meta WHERE key LIKE 'busy_%'").run();
+  const n = store.addPrompt(db, { sessionId: 's3', project: 'eps', cwd: '/x/eps', text: 'lee' });
+  enqueue(db, 'observation', 's3', 'eps', { tool: 'Read', input: { file_path: '/x/a.txt' }, output: 'ok', prompt_number: n });
+  const ollama = { kind: 'ollama', model: 'x', baseUrl: 'http://127.0.0.1:9' };
+  let calls = 0;
+  const busy = async () => { calls++; return 'GTA5_Enhanced.exe'; };
+  assert.equal(await drain(db, DEFAULT_SETTINGS, { lock: false, provider: ollama, sync: false, busy }), 0);
+  assert.equal(db.prepare("SELECT count(*) n FROM queue WHERE status = 'pending' AND attempts = 0").get().n, 1);
+  // A second drain right after reuses the answer instead of listing processes again.
+  await drain(db, DEFAULT_SETTINGS, { lock: false, provider: ollama, sync: false, busy });
+  assert.equal(calls, 1);
+  // No local LLM involved: the guard does not apply.
+  assert.equal(await drain(db, DEFAULT_SETTINGS, { lock: false, provider: { kind: 'none' }, sync: false, busy }), 1);
   db.close();
 });
 

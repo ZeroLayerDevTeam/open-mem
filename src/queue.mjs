@@ -7,7 +7,8 @@ import { dataPath, log } from './config.mjs';
 import { getMeta, setMeta, transaction } from './db.mjs';
 import { isNetworkError } from './backend.mjs';
 import { listItems } from './items.mjs';
-import { BRIEF_SYSTEM, completeJson, resolveProvider, OBSERVATION_SYSTEM, SUMMARY_SYSTEM } from './llm.mjs';
+import { busyReason } from './busy.mjs';
+import { BRIEF_SYSTEM, completeJson, resolveProvider, OBSERVATION_SYSTEM, SUMMARY_SYSTEM, unloadOllama } from './llm.mjs';
 import { sessionMeta } from './meta.mjs';
 import { redact } from './redact.mjs';
 import { clip as clipLine, insertObservation, promptText, sessionInfo, turnObservations, upsertSummary } from './store.mjs';
@@ -25,6 +26,8 @@ export function enqueue(db, kind, sessionId, project, payload) {
 }
 
 // `createdBefore`: only items queued before this time (used while waiting for the LLM to come back).
+const BUSY_RECHECK_MS = 30000;
+
 function claim(db, createdBefore = Number.MAX_SAFE_INTEGER) {
   return transaction(db, () => {
     const row = db.prepare(`SELECT * FROM queue WHERE (status = 'pending'
@@ -226,7 +229,7 @@ async function refreshBriefs(db, projects, provider, settings) {
 }
 
 // Processes the queue until empty. Returns number of items handled.
-export async function drain(db, settings, { lock = true, provider: forced, sync = true } = {}) {
+export async function drain(db, settings, { lock = true, provider: forced, sync = true, busy: isBusy = busyReason } = {}) {
   if (lock && !acquireLock()) return 0;
   let handled = 0;
   const touched = new Set();
@@ -241,7 +244,26 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
       const n = db.prepare("SELECT count(*) n FROM queue WHERE status IN ('pending', 'processing')").get().n;
       if (n) log('warn', `LLM unreachable, holding ${n} queue item(s) until it is back: ${provider.reason}`);
     } else if (provider.kind === 'none' && provider.reason) log('info', `drain without LLM: ${provider.reason}`);
-    for (let item = claim(db, cutoff); item; item = claim(db, cutoff)) {
+    // A local LLM competes with games for the GPU: while one runs, nothing is sent to it.
+    // Hooks start a drainer on every tool call: a recent "busy" answer is reused instead of listing processes again.
+    const checkBusy = provider.kind !== 'ollama' ? async () => null : async () => {
+      const seen = Number(getMeta(db, 'busy_seen_at') || 0);
+      if (Date.now() - seen < BUSY_RECHECK_MS) return getMeta(db, 'busy_reason');
+      const reason = await isBusy(settings);
+      setMeta(db, 'busy_seen_at', reason ? Date.now() : 0);
+      if (reason) setMeta(db, 'busy_reason', reason);
+      return reason;
+    };
+    let busy = await checkBusy();
+    let busyCheckedAt = Date.now();
+    for (let item = busy ? null : claim(db, cutoff); item; item = claim(db, cutoff)) {
+      if (Date.now() - busyCheckedAt > BUSY_RECHECK_MS) {
+        busyCheckedAt = Date.now();
+        if ((busy = await checkBusy())) {
+          db.prepare("UPDATE queue SET status = 'pending', attempts = attempts - 1 WHERE id = ?").run(item.id);
+          break;
+        }
+      }
       touched.add(item.project);
       const run = (p) => (item.kind === 'observation' ? processObservation(db, item, p, settings)
         : item.kind === 'summary' ? processSummary(db, item, p, settings) : null);
@@ -271,7 +293,11 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
         }
       }
     }
-    await refreshBriefs(db, touched, provider, settings);
+    if (busy) {
+      const n = db.prepare("SELECT count(*) n FROM queue WHERE status IN ('pending', 'processing')").get().n;
+      log('info', `drain paused while ${busy} runs (${n} queue item(s) waiting)`);
+      try { await unloadOllama(provider.baseUrl); } catch { /* Ollama already gone */ }
+    } else await refreshBriefs(db, touched, provider, settings);
     if (settings.mode === 'remote' && settings.serverUrl && sync) {
       try { await pushPending(db, settings); } catch (err) { log('warn', `sync failed, will retry: ${err.message}`); }
     }

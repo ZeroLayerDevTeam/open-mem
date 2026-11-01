@@ -43,7 +43,7 @@ export async function resolveProvider(settings) {
   try {
     const tags = await fetchJson(`${baseUrl}/api/tags`, { timeoutMs: 2500 });
     const model = pickOllamaModel((tags.models || []).map((m) => m.name), settings.model);
-    if (model) return { kind: 'ollama', model, baseUrl };
+    if (model) return { kind: 'ollama', model, baseUrl, keepAlive: settings.llmKeepAlive || undefined };
     return { kind: 'none', reason: `Ollama at ${baseUrl} has no chat model (run: ollama pull qwen3:8b)` };
   } catch (err) {
     return { kind: 'none', unreachable: true, reason: `Ollama not reachable at ${baseUrl} (${err.message})` };
@@ -60,13 +60,24 @@ export function parseJsonReply(text) {
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
+// Frees the (V)RAM of every model the Ollama at baseUrl has loaded. Returns the names unloaded.
+export async function unloadOllama(baseUrl = OLLAMA_DEFAULT) {
+  baseUrl = (baseUrl || OLLAMA_DEFAULT).replace(/\/+$/, '');
+  const ps = await fetchJson(`${baseUrl}/api/ps`, { timeoutMs: 2500 });
+  const names = (ps.models || []).map((m) => m.name);
+  for (const model of names) {
+    await fetchJson(`${baseUrl}/api/generate`, { timeoutMs: 15000, body: { model, keep_alive: 0 } });
+  }
+  return names;
+}
+
 export async function completeJson(provider, system, user, timeoutMs = 120000) {
   const messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
   if (provider.kind === 'ollama') {
     const res = await fetchJson(`${provider.baseUrl}/api/chat`, {
       timeoutMs,
       body: { model: provider.model, messages, stream: false, format: 'json', think: false,
-        options: { temperature: 0.2, num_ctx: 8192 } },
+        keep_alive: provider.keepAlive, options: { temperature: 0.2, num_ctx: 8192 } },
     });
     return parseJsonReply(res.message?.content);
   }
