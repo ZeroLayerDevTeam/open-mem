@@ -121,13 +121,16 @@ function searchFilter(kind, o, mode) {
   if (o.query && !match) return null;
   const where = match ? [`${t.fts} MATCH ?`] : [];
   if (match) params.push(match);
-  if (o.project) { where.push(`${t.alias}.project = ? COLLATE NOCASE`); params.push(o.project); }
-  if (o.type && kind === 'obs') { where.push('o.type = ?'); params.push(o.type); }
-  if (o.type && kind === 'item') { where.push('i.kind = ?'); params.push(o.type); }
+  // With a MATCH, unary + keeps SQLite from picking a table index as the outer loop: that plan runs the
+  // full-text query once per row of the project (~20 s on a 50k-record memory) instead of once.
+  const col = (c) => (match ? `+${c}` : c);
+  if (o.project) { where.push(`${col(`${t.alias}.project`)} = ? COLLATE NOCASE`); params.push(o.project); }
+  if (o.type && kind === 'obs') { where.push(`${col('o.type')} = ?`); params.push(o.type); }
+  if (o.type && kind === 'item') { where.push(`${col('i.kind')} = ?`); params.push(o.type); }
   const start = toEpoch(o.dateStart);
   const end = toEpoch(o.dateEnd, true);
-  if (start != null) { where.push(`${t.time} >= ?`); params.push(start); }
-  if (end != null) { where.push(`${t.time} <= ?`); params.push(end); }
+  if (start != null) { where.push(`${col(t.time)} >= ?`); params.push(start); }
+  if (end != null) { where.push(`${col(t.time)} <= ?`); params.push(end); }
   const from = match ? `${t.fts} JOIN ${t.table} ${t.alias} ON ${t.alias}.id = ${t.fts}.rowid` : `${t.table} ${t.alias}`;
   return { t, match, from: `${from} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`, params };
 }

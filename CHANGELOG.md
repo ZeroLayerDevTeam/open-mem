@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Prompt recall and full-text search with a project or date filter no longer stall: SQLite picked the project index as the outer loop and ran the MATCH once per row of the project, about 20 s on a 50k-record memory, so the `UserPromptSubmit` hook hit its 15 s timeout and the recall was thrown away. Filter columns now carry a unary `+` when there is a MATCH, so the FTS index drives the query (about 70 ms, same results).
+
 ## 0.5.4
 
 - GPU guard for a shared server without a GPU (`cli guard`, `guardAllow`, `guardPort`, `guardPollSeconds`, new `src/guard.mjs`). The machine with the GPU lets the listed addresses reach its Ollama through a small proxy, limited to the calls a server needs. While a game runs it answers 503, cuts the calls in flight and unloads the models, so a server that cannot see the game still leaves the GPU alone. Ollama stays on loopback, and session start runs the guard once `guardAllow` is set.
