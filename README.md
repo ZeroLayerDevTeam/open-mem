@@ -99,6 +99,19 @@ node "$OM" remote connect --url http://server:37800 --name laptop < keyfile
 
 Clients keep writing to their own database (an outbox), compress with their own LLM, and push new rows after each drain. Reads, notes and tasks go to the server; if it is unreachable they fall back to the local copy and sync later. `remote disconnect` returns to local mode.
 
+### A server without a GPU
+
+An always-on small server (a Raspberry Pi) can hold the memory while another machine lends its GPU. That machine stays a normal client: it compresses its own sessions with its own Ollama and pauses for games as usual. What runs on the server (embeddings, notes review, search queries) reaches its Ollama through `cli guard`:
+
+```bash
+# on the machine with the GPU: its next session start runs the guard (or run `node "$OM" guard` now)
+node "$OM" config set guardAllow 192.168.0.10            # the server's address
+# on the server
+node "$OM" config set baseUrl http://192.168.0.20:11435  # the machine with the GPU
+```
+
+Ollama stays on loopback: the guard is the only way in, only for the listed addresses and only for the calls a server needs (never pull or delete). While a game runs it answers 503, cuts the calls in flight and unloads the models, within `guardPollSeconds`. The server reads that as an LLM that is down, so its work waits and search stays full-text. Listing processes costs half a second, so the guard only does it while the server is using the GPU. With the guard stopped the server has no LLM at all: a failure never takes the GPU from a game.
+
 ## LLM providers
 
 ```bash
@@ -176,6 +189,8 @@ claude-open-mem never deletes claude-mem data.
 | `wakeBroadcast` | `255.255.255.255` | Broadcast address for the magic packet (e.g. `192.168.0.255`) |
 | `wakeOffMinutes` | 10 | Quiet minutes after the last LLM call before `wakeOffCommand` runs; only a machine the server woke is turned off |
 | `wakeOffCommand` | `""` | Shell command that turns that machine off (e.g. over SSH). Exit 0 = turned off, 3 = in use, left on; anything else is retried after another quiet period |
+| `guardAllow` / `guardPort` | `[]` / 11435 | Addresses `cli guard` lets through to this machine's Ollama, and its port (`[]` = no guard) |
+| `guardPollSeconds` | 10 | How often the guard looks for a game while a server is using the GPU |
 
 Set `CLAUDE_OPEN_MEM_DATA_DIR` to move the data folder.
 
