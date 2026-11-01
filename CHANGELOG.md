@@ -1,7 +1,10 @@
 # Changelog
 
-## 0.3.2
+## 0.4.0
 
+- Web viewer in English and Spanish (`web/i18n.js`): follows the browser language until one is picked; dates and
+  numbers use the matching locale. A test checks that every UI string has a translation.
+- Theme selector: automatic (system), light or dark. Language and theme are remembered per browser.
 - Web task boards: cards move with pointer events instead of HTML5 drag and drop, which never fired on touch screens
   and stalled in some browsers. On a phone, hold a card for a moment, then drag it. The drag handlers are bound once
   instead of once per page render.

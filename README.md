@@ -86,7 +86,10 @@ Sections: **Progress** (counters, activity, open tasks, latest sessions, machine
 recent sessions, most-edited files, branches, notes to check, Markdown export), **Timeline** (everything by day,
 filterable), **Tasks** (one board per project, drag a card to change its status),
 **Notes**, **Search**, **Sessions** (prompt by prompt). Any record opens in a side panel with its metadata;
-notes and tasks can be edited there.
+notes and tasks can be edited there. On a phone, hold a task card for a moment, then drag it.
+
+English or Spanish (follows the browser language until you pick one) and an automatic, light or dark theme: both
+selectors sit at the bottom of the side menu (top right on a phone, and on the login page), remembered per browser.
 
 Security: HttpOnly + SameSite=Strict session cookie (30 days), origin check on writes, strict CSP, login rate limit.
 Lost the token? `cli token reset` prints a new one and logs every browser out. To reach it from other devices,
