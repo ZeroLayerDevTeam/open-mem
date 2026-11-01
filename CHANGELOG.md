@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Local LLM page on a server without an NVIDIA GPU (Ollama on another machine, reached through a tunnel): the machine that runs Ollama sends its GPU (memory, load, temperature, power) after each queue run, at most once a minute (`POST /api/gpu`, device key only). The GPU panel shows it with the machine name and its age, and a note below says the GPU is on that other machine. Reports older than a week are dropped. The nvidia-smi code moved to `src/gpu.mjs`.
+
 ## 0.5.1
 
 - Local LLM page: `nvidia-smi` is also looked up where the NVIDIA driver installs it when it is not on PATH (`System32`, `Program Files\NVIDIA Corporation\NVSMI`, `/usr/lib/wsl/lib`). The GPU panel tells "nvidia-smi not found" apart from "nvidia-smi failed" (and shows its error, e.g. driver not loaded); a missing one is looked for again every minute instead of every poll.

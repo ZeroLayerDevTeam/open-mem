@@ -12,6 +12,7 @@ import { exportFileName, itemsMarkdown } from './export.mjs';
 import { ingest } from './sync.mjs';
 import { gzipSync } from 'node:zlib';
 import { ENGINE_ACTIONS, engineAction, engineStatus } from './engine.mjs';
+import { storeGpuReport } from './gpu.mjs';
 import { facets, feed, find, itemsPage, overview, projectDetail, projects, record, sessionDetail, sessions } from './views.mjs';
 
 const WEB = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web');
@@ -189,6 +190,14 @@ export function createServer(db, settings) {
     if (route === '/api/ingest') {
       if (who.kind !== 'device') throw new HttpError(403, 'devices only');
       return send(res, 200, { ok: true, counts: ingest(db, who.device, await readBody(req, 64 * 1024 * 1024)) });
+    }
+    if (route === '/api/gpu') {
+      if (who.kind !== 'device') throw new HttpError(403, 'devices only');
+      try {
+        return send(res, 200, { ok: true, gpus: storeGpuReport(db, who.device, await readBody(req, 16 * 1024)) });
+      } catch (err) {
+        throw err instanceof HttpError ? err : new HttpError(400, err.message);
+      }
     }
     if (route.startsWith('/api/engine/')) {
       if (who.kind !== 'admin') throw new HttpError(403, 'admin only');
