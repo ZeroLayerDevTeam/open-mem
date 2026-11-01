@@ -35,6 +35,8 @@ Usage: node cli.mjs <command> [options]
                                  Notes and tasks as Markdown, one file per project (default folder ./open-mem-export)
   config                         Show settings
   config set <key> <value>       Change a setting (e.g. provider ollama, model gemma3:12b)
+  config set llmKeepAlive <time> How long Ollama keeps the model on the GPU after the last call
+                                 (default 10m; e.g. 30s, 1h, 0 = unload at once, -1 = keep loaded)
   uninstall-claude-mem [--move-data] [--dry-run] [--yes]
                                  Final import, then uninstall the claude-mem plugin and stop its worker.
                                  --move-data renames ~/.claude-mem (never deletes it).
@@ -65,7 +67,17 @@ function option(args, name) {
   return v;
 }
 
+// Ollama's keep_alive as a Go duration (30s, 10m, 1h30m). A whole number counts seconds and gets the unit added, since
+// Ollama only reads unitless values from JSON numbers: 0 -> 0s unloads at once, -1 -> -1s keeps the model loaded.
+function parseKeepAlive(raw) {
+  const v = String(raw).trim();
+  if (/^-?\d+$/.test(v)) return `${v}s`;
+  if (/^(\d+(\.\d+)?(ms|s|m|h))+$/.test(v)) return v;
+  throw new Error(`llmKeepAlive must be a duration such as 30s, 10m or 1h, or a number of seconds (0 = unload at once, -1 = keep loaded); got "${v}"`);
+}
+
 function parseValue(key, raw) {
+  if (key === 'llmKeepAlive') return parseKeepAlive(raw);
   const def = DEFAULT_SETTINGS[key];
   if (typeof def === 'number') return Number(raw);
   if (typeof def === 'boolean') return raw === 'true';
