@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Local LLM page: `nvidia-smi` is also looked up where the NVIDIA driver installs it when it is not on PATH
+  (`System32`, `Program Files\NVIDIA Corporation\NVSMI`, `/usr/lib/wsl/lib`). The GPU panel tells "nvidia-smi not
+  found" apart from "nvidia-smi failed" (and shows its error, e.g. driver not loaded); a missing one is looked for
+  again every minute instead of every poll.
+- Local LLM page: spacing between the panels was missing (the margin rule only matched direct children of `main`).
+
 ## 0.5.0
 
 - Web viewer redesign: responsive layout from phone to wide screen (off-canvas menu, stacked tables, no horizontal scroll), a search box in the top bar on every page (`/` focuses it), record side panel as a modal dialog, toasts after saving, skeletons while loading, a year-long activity map, project paths shown from the project folder.

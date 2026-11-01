@@ -135,6 +135,14 @@ test('nvidia-smi output is parsed, missing values become null', () => {
   ]);
 });
 
+test('nvidia-smi is looked up on PATH first, then where the driver installs it', () => {
+  assert.deepEqual(engine.smiCandidates('win32', { SystemRoot: 'C:\\WINDOWS', ProgramW6432: 'D:\\Programs' }), [
+    'nvidia-smi', 'C:\\WINDOWS\\System32\\nvidia-smi.exe', 'D:\\Programs\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe',
+  ]);
+  assert.equal(engine.smiCandidates('win32', {})[2], 'C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe');
+  assert.ok(engine.smiCandidates('linux', {}).includes('/usr/lib/wsl/lib/nvidia-smi'));
+});
+
 test('server: the LLM page needs the admin; actions are POST, origin-checked, admin only', async () => {
   const db = openDb(path.join(TMP, 'srv.db'));
   const server = await serve(db, { ...DEFAULT_SETTINGS, provider: 'none' }, { host: '127.0.0.1', port: 0 });

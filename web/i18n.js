@@ -334,7 +334,10 @@ const ES = {
   load: 'carga',
   temperature: 'temperatura',
   power: 'consumo',
-  'No NVIDIA GPU found (nvidia-smi is not available).': 'No se encontró una GPU NVIDIA (nvidia-smi no está disponible).',
+  'nvidia-smi was not found. It comes with the NVIDIA driver: install or update the driver, or add nvidia-smi to PATH.':
+    'No se encontró nvidia-smi. Viene con el driver de NVIDIA: instala o actualiza el driver, o añade nvidia-smi al PATH.',
+  'nvidia-smi failed: {error}': 'nvidia-smi falló: {error}',
+  'No NVIDIA GPU found.': 'No se encontró una GPU NVIDIA.',
   Failed: 'Fallidas',
   'Generation speed (tokens per second)': 'Velocidad de generación (tokens por segundo)',
   'No calls in this period.': 'No hay llamadas en este periodo.',

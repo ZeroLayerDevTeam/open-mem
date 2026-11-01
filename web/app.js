@@ -944,7 +944,8 @@ const llmPage = {
         ${meter(ratio, t('Video memory in use'))}
         <div class="minis">${g.util != null ? html`<span>${t('load')} <b>${g.util}%</b></span>` : ''}${g.temp != null ? html`<span>${t('temperature')} <b>${g.temp} °C</b></span>` : ''}
           ${g.powerW != null ? html`<span>${t('power')} <b>${Math.round(g.powerW)} W</b></span>` : ''}</div></div>`;
-    }) : emptyPanel(t('No NVIDIA GPU found (nvidia-smi is not available).'));
+    }) : emptyPanel(s.gpuError === 'missing' ? t('nvidia-smi was not found. It comes with the NVIDIA driver: install or update the driver, or add nvidia-smi to PATH.')
+      : s.gpuError ? t('nvidia-smi failed: {error}', { error: s.gpuError }) : t('No NVIDIA GPU found.'));
 
     const legend = html`<div class="legend"><span><i class="sw-1"></i>${t('Done')}</span><span><i class="sw-crit"></i>${t('Failed')}</span></div>`;
     const span = (b) => `${bucketLabel(b.at, st.hours)}${st.hours <= 24 ? ` - ${timeOf(b.at + st.bucketMs)}` : ''}`;

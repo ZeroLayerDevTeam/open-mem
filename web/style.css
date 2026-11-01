@@ -184,7 +184,7 @@ body.busy .loadbar { opacity: 1; width: 80%; transition: width 2.5s cubic-bezier
 .page-head .lede code { font-size: 12.5px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 18px 20px; min-width: 0; }
-main > :is(.panel, .cols, .kpis, .meta) + :is(.panel, .cols, .kpis), #results > .panel + .panel { margin-top: 18px; }
+:is(main, #llm) > :is(.panel, .cols, .kpis, .meta) + :is(.panel, .cols, .kpis), #results > .panel + .panel { margin-top: 18px; }
 .panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
 .panel-head h2 { margin: 0; font-size: 16px; letter-spacing: -.005em; }
 .panel-head a, .panel-head .muted { font-size: 13px; }
