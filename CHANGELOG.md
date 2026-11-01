@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- A client of a shared server pushes every 2 minutes while its queue drains. It only pushed when the queue emptied, so with several sessions keeping the queue full new records never reached the server.
+
 ## 0.5.5
 
 - Prompt recall and full-text search with a project or date filter no longer stall: SQLite picked the project index as the outer loop and ran the MATCH once per row of the project, about 20 s on a 50k-record memory, so the `UserPromptSubmit` hook hit its 15 s timeout and the recall was thrown away. Filter columns now carry a unary `+` when there is a MATCH, so the FTS index drives the query (about 70 ms, same results).

@@ -122,6 +122,40 @@ test('queue waits for an LLM that is temporarily down instead of dropping reads'
   db.close();
 });
 
+test('a client pushes while a long queue drains, not only when it empties', async () => {
+  const db = openDb();
+  db.prepare('DELETE FROM queue').run();
+  const settings = { ...DEFAULT_SETTINGS, provider: 'none', mode: 'remote', serverUrl: 'http://127.0.0.1:9' };
+  const left = () => db.prepare('SELECT count(*) n FROM queue').get().n;
+  const fill = () => {
+    const n = store.addPrompt(db, { sessionId: 's4', project: 'zeta', cwd: '/x/zeta', text: 'cambia' });
+    for (const f of ['a', 'b', 'c']) enqueue(db, 'observation', 's4', 'zeta', { tool: 'Edit', input: { file_path: `/x/${f}` }, output: 'ok', prompt_number: n });
+  };
+  const opts = (seen) => ({ lock: false, provider: { kind: 'none' }, push: async () => seen.push(left()) });
+
+  fill();
+  const often = [];
+  assert.equal(await drain(db, settings, { ...opts(often), pushEveryMs: 0 }), 3);
+  assert.deepEqual(often, [3, 2, 1, 0], 'before each item, and once at the end');
+
+  fill();
+  const atEnd = [];
+  await drain(db, settings, opts(atEnd));
+  assert.deepEqual(atEnd, [0], 'a short drain pushes once');
+
+  fill();
+  const never = [];
+  await drain(db, settings, { ...opts(never), pushEveryMs: 0, sync: false });
+  assert.deepEqual(never, [], 'sync off');
+
+  // A server that does not answer costs a warning, not the queue.
+  fill();
+  const failing = { lock: false, provider: { kind: 'none' }, pushEveryMs: 0, push: async () => { throw new Error('server down'); } };
+  assert.equal(await drain(db, settings, failing), 3);
+  assert.equal(left(), 0);
+  db.close();
+});
+
 test('busy guard: games pause the queue and keep items', async () => {
   const s = { ...DEFAULT_SETTINGS, busyProcesses: ['GTA5_Enhanced.exe', 'D:\\Juegos\\'] };
   assert.equal(matchBusy(['C:\\Windows\\explorer.exe'], s), null);
