@@ -2,7 +2,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { dataPath, ensureDataDir } from './config.mjs';
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -199,6 +199,23 @@ CREATE TABLE IF NOT EXISTS web_sessions (
 );
 `;
 
+// v3: embedding vectors for semantic search, keyed by ref ("123", "S5", "I7"). A record whose text changes or that is
+// deleted loses its vector, so the next drain embeds it again.
+const SCHEMA_V3 = `
+CREATE TABLE IF NOT EXISTS embeddings (
+  ref TEXT PRIMARY KEY,
+  model TEXT NOT NULL,
+  vec BLOB NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS emb_obs_ad AFTER DELETE ON observations BEGIN DELETE FROM embeddings WHERE ref = CAST(old.id AS TEXT); END;
+CREATE TRIGGER IF NOT EXISTS emb_obs_au AFTER UPDATE OF title, subtitle, narrative ON observations BEGIN DELETE FROM embeddings WHERE ref = CAST(old.id AS TEXT); END;
+CREATE TRIGGER IF NOT EXISTS emb_sum_ad AFTER DELETE ON summaries BEGIN DELETE FROM embeddings WHERE ref = 'S' || old.id; END;
+CREATE TRIGGER IF NOT EXISTS emb_sum_au AFTER UPDATE OF request, learned, completed ON summaries BEGIN DELETE FROM embeddings WHERE ref = 'S' || old.id; END;
+CREATE TRIGGER IF NOT EXISTS emb_items_ad AFTER DELETE ON items BEGIN DELETE FROM embeddings WHERE ref = 'I' || old.id; END;
+CREATE TRIGGER IF NOT EXISTS emb_items_au AFTER UPDATE OF title, body ON items BEGIN DELETE FROM embeddings WHERE ref = 'I' || old.id; END;
+`;
+
 // Reconstruction metadata added to every captured record in v2.
 const V2_COLUMNS = {
   sessions: ['device TEXT', 'git_branch TEXT', 'git_commit TEXT', 'injected TEXT', 'last_seen_at INTEGER'],
@@ -224,6 +241,7 @@ function migrate(db) {
     db.exec('DROP TRIGGER IF EXISTS obs_au; DROP TRIGGER IF EXISTS sum_au;');
     db.exec(SCHEMA);
     db.exec(SCHEMA_V2);
+    db.exec(SCHEMA_V3);
     addMissingColumns(db);
     db.exec('CREATE INDEX IF NOT EXISTS obs_unsynced ON observations (id) WHERE synced_at IS NULL');
     db.exec('CREATE INDEX IF NOT EXISTS sum_unsynced ON summaries (id) WHERE synced_at IS NULL');

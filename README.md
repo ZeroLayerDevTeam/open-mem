@@ -45,7 +45,7 @@ The plugin id is `open-mem` (Claude Code reserves plugin names that start with `
 
 | Hook | What it does |
 |---|---|
-| `SessionStart` | Injects the project brief, open tasks, recent sessions, hot files and notes; records device and git state. |
+| `SessionStart` | Injects the project brief, open tasks, recent sessions, hot files and notes; records device and git state. Warns when the repo sits on a merged branch or one not merged yet; the first session of the day (from 05:00) also gets a recap of the last working session across every project. |
 | `UserPromptSubmit` | Stores the prompt and injects matching memory (full-text search, no LLM, a few ms). |
 | `PostToolUse` | Queues the tool call. No network, returns immediately. |
 | `Stop` | Queues a summary of the turn. |
@@ -57,6 +57,15 @@ every `briefEvery` new records it rewrites the project brief. If the LLM is unre
 **Gaming:** a local model and a game fight over the same GPU. While a game runs (anything under Steam, Epic, Xbox,
 EA, GOG, Riot or Ubisoft game folders, plus whatever you list in `busyProcesses`), the queue waits and the Ollama
 models are unloaded; it drains once the game closes. `node "$OM" busy` shows what is detected.
+
+**Semantic search:** after each drain, new records get an embedding from Ollama (`embedModel`, default
+`embeddinggemma`; `ollama pull embeddinggemma`). Searches merge full-text and vector results, so a search finds
+records that say the same thing in other words. Without the model, during a game, or when Ollama is down, search is
+full-text only.
+
+**Notes review:** when a project's notes change, the LLM checks them for contradictions, outdated facts and
+duplicates (at most every `notesReviewHours`). Its findings appear at session start and on the project page; nothing
+is changed automatically.
 
 ### Tools Claude gets (MCP)
 
@@ -74,7 +83,8 @@ Ids: `123` observation, `S45` session summary, `I7` note or task.
 `http://127.0.0.1:37800` (started automatically in local mode; or run `cli serve`). Log in with the admin token.
 
 Sections: **Progress** (counters, activity, open tasks, latest sessions, machines), **Projects** (brief, tasks, notes,
-recent sessions, most-edited files, branches), **Timeline** (everything by day, filterable), **Tasks** (board),
+recent sessions, most-edited files, branches, notes to check, Markdown export), **Timeline** (everything by day,
+filterable), **Tasks** (one board per project, drag a card to change its status),
 **Notes**, **Search**, **Sessions** (prompt by prompt). Any record opens in a side panel with its metadata;
 notes and tasks can be edited there.
 
@@ -119,6 +129,9 @@ node "$OM" search nginx certs     # search from the terminal
 node "$OM" brief my-project       # rewrite a project brief now
 node "$OM" drain | sync           # process the queue / push to the server now
 node "$OM" busy [--unload]        # is a game running? (exit 0 = busy)
+node "$OM" embed [--all]          # compute missing embeddings now (--all: no per-run limit)
+node "$OM" review-notes my-project  # check a project's notes for contradictions now
+node "$OM" export [--project P] [--out DIR]  # notes and tasks as Markdown, one file per project
 node "$OM" serve | token init | token reset | device add|list|remove | remote connect|disconnect
 node "$OM" config [set key value]
 ```
@@ -168,6 +181,10 @@ claude-open-mem never deletes claude-mem data.
 | `pauseWhenBusy` | `true` | Pause the queue and unload Ollama models while a game runs |
 | `busyProcesses` | `[]` | Exe names (`GTA5.exe`) or folders (`D:\Games\`) that count as a game |
 | `busyPaths` / `busyIgnore` | game libraries / launchers | Folders whose programs count as games, and exceptions |
+| `branchWarning` / `dailyRecap` | `true` / `true` | Branch warning and first-session-of-the-day recap at session start |
+| `embedModel` / `embedPerDrain` | `embeddinggemma` / 2000 | Ollama embedding model (`''` = full-text only) and records embedded per drain |
+| `notesReview` / `notesReviewHours` | `true` / 12 | LLM review of changed notes, at most this often per project |
+| `serveDrainMinutes` | 10 | `cli serve` drains the queue and runs the upkeep this often (0 = never) |
 
 Set `CLAUDE_OPEN_MEM_DATA_DIR` to move the data folder.
 

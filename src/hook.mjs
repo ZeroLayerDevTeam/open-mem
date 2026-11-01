@@ -42,7 +42,12 @@ const out = (obj) => process.stdout.write(JSON.stringify(obj));
 
 async function sessionStart(db, input, settings, project) {
   const device = deviceName(settings);
-  m.ensureSession(db, { sessionId: input.session_id, project, cwd: input.cwd, device, ...m.gitInfo(input.cwd) });
+  const git = m.gitInfo(input.cwd);
+  // First session of this machine's working day (since 05:00): recap the last stretch of work, every project.
+  const dayStart = m.workdayStart();
+  const firstToday = settings.dailyRecap && !db.prepare('SELECT 1 FROM sessions WHERE started_at >= ? AND session_id != ? LIMIT 1')
+    .get(dayStart, input.session_id);
+  m.ensureSession(db, { sessionId: input.session_id, project, cwd: input.cwd, device, ...git });
   // Lets skills/users find the CLI: node "$(cat ~/.claude-open-mem/plugin-root)/src/cli.mjs"
   fs.writeFileSync(dataPath('plugin-root'), ROOT);
   if (settings.autoImportClaudeMem && m.claudeMemDbPath()) spawnCli('import', '--quiet');
@@ -60,8 +65,11 @@ async function sessionStart(db, input, settings, project) {
     if (settings.webAutostart && !pidAlive(dataPath('serve.pid'))) spawnCli('serve', '--quiet');
   }
 
-  let { result: ctx, fallback } = await m.call('context', { project, cwd: input.cwd }, { db: () => db, settings });
+  const args = { project, cwd: input.cwd, ...(firstToday ? { recap: { until: dayStart, tz: new Date().getTimezoneOffset() } } : {}) };
+  let { result: ctx, fallback } = await m.call('context', args, { db: () => db, settings });
   let text = ctx.text;
+  const branch = settings.branchWarning ? m.branchWarning(input.cwd, git.gitBranch) : null;
+  if (branch) text = `> open-mem: ${branch}\n\n${text}`;
   if (fallback) text += '\n\n(open-mem: shared server unreachable, showing this machine\'s local memory.)';
   if (!m.getMeta(db, 'claude_mem_last_import_at') && m.claudeMemDbPath() && settings.autoImportClaudeMem) {
     text += '\n\n(claude-open-mem is importing your claude-mem history in the background; it will show up next session.)';

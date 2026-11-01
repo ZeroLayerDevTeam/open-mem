@@ -226,7 +226,10 @@ async function projectView(name) {
       <h2>Recent sessions</h2><ul class="rows">${p.recent.map((s) => html`<li>${refLink(`S${s.id}`)}<span class="title" data-ref="S${s.id}">${clip(s.request, 120)}</span>
         <span class="side">${dayOf(s.created_at)}</span>${s.completed ? html`<span class="sub">${clip(s.completed, 180)}</span>` : ''}</li>`)}</ul>
       <p><a href="#/timeline?project=${encodeURIComponent(p.project)}">Full timeline for ${p.project}</a></p>
+      <p><a href="/api/export?${q({ project: p.project })}" download>Export notes and tasks (Markdown)</a></p>
     </div><div>
+      ${p.review?.flags?.length ? html`<h2>Notes to check</h2><ul class="rows">${p.review.flags.map((f) => html`<li>${f.ids.map((id) => refLink(id))} ${typeTag(f.kind)}<span class="sub">${f.reason}</span></li>`)}</ul>
+        <p class="muted">Local LLM review of ${dayOf(p.review.at)}.</p>` : ''}
       <h2>Notes</h2>${p.notes.length ? html`<ul class="files">${p.notes.map((n) => html`<li><a href="#" data-ref="I${n.id}">${n.title}</a><span class="muted">${ago(n.updated_at)}</span></li>`)}</ul>` : html`<p class="muted">None.</p>`}
       <h2>Most-edited files</h2><ul class="files">${p.files.map((f) => html`<li><span title="${f.file}">${f.file}</span><span class="num muted">${f.n}</span></li>`)}</ul>
       ${p.branches.length ? html`<h2>Branches</h2><ul class="files">${p.branches.map((b) => html`<li><span>${b.branch}</span><span class="muted">${ago(b.last)}</span></li>`)}</ul>` : ''}
@@ -285,21 +288,77 @@ async function projectOptions(selected) {
   return html`<option value="">No project</option>${projects.map((p) => html`<option ${p.project === selected ? raw('selected') : ''}>${p.project}</option>`)}`;
 }
 
+const taskCard = (t, showProject) => html`<li class="task p${t.priority}" draggable="true" data-id="${t.id}"><span class="t" data-ref="I${t.id}">${t.title}</span>
+  <div class="meta">${refLink(`I${t.id}`)}${showProject && t.project ? html`<span>${t.project}</span>` : ''}${t.due_at ? html`<span>due ${dayOf(t.due_at)}</span>` : ''}<span>${ago(t.updated_at)}</span></div></li>`;
+
+// Drag a card to another column to change its status.
+function enableDrag(root) {
+  let dragged = null;
+  root.addEventListener('dragstart', (e) => {
+    const li = e.target.closest('li[data-id]');
+    if (!li) return;
+    dragged = li.dataset.id;
+    e.dataTransfer.setData('text/plain', dragged);
+    e.dataTransfer.effectAllowed = 'move';
+    li.classList.add('dragging');
+  });
+  root.addEventListener('dragend', (e) => { e.target.closest('li')?.classList.remove('dragging'); for (const c of root.querySelectorAll('.drop')) c.classList.remove('drop'); });
+  root.addEventListener('dragover', (e) => {
+    const col = e.target.closest('[data-status]');
+    if (!col || !dragged) return;
+    e.preventDefault();
+    for (const c of root.querySelectorAll('.drop')) if (c !== col) c.classList.remove('drop');
+    col.classList.add('drop');
+  });
+  root.addEventListener('drop', async (e) => {
+    const col = e.target.closest('[data-status]');
+    if (!col || !dragged) return;
+    e.preventDefault();
+    const id = Number(dragged);
+    dragged = null;
+    try { await api('/api/items/update', { id, patch: { status: col.dataset.status } }); } catch (err) { alertLine(err.message); }
+    route();
+  });
+}
+
+const alertLine = (msg) => { const p = $('#board-error'); if (p) p.textContent = msg; };
+
 async function tasksView(params) {
   const project = params.get('project') || '';
   const { result: tasks } = await api('/api/items/list', { kind: 'task', project: project || undefined, limit: 500 });
   const opts = await projectOptions(project);
-  view.innerHTML = html`<h1 class="page">Tasks</h1><p class="lede">Durable to-dos Claude and you share across sessions and machines. Claude moves them with <code>task_update</code>.</p>
+  const column = (st, label, list, showProject) => html`<section class="col" data-status="${st}"><h3><span>${label}</span><span class="num">${list.length}</span></h3>
+    <ol>${list.slice(0, st === 'done' ? 30 : 200).map((t) => taskCard(t, showProject))}</ol></section>`;
+  const inColumn = (st) => (t) => t.status === st || (st === 'done' && t.status === 'cancelled');
+  let body;
+  if (project) {
+    body = html`<div class="board">${COLUMNS.map(([st, label]) => column(st, label, tasks.filter(inColumn(st)), false))}</div>`;
+  } else {
+    // Every project: one lane per project with open tasks, busiest first; done tasks of the last 7 days.
+    const recent = Date.now() - 7 * 24 * 3600 * 1000;
+    const lanes = new Map();
+    for (const t of tasks) {
+      const open = ['todo', 'doing', 'blocked'].includes(t.status);
+      if (!open && !(t.status === 'done' && (t.completed_at || t.updated_at) >= recent)) continue;
+      const key = t.project || '';
+      if (!lanes.has(key)) lanes.set(key, []);
+      lanes.get(key).push(t);
+    }
+    const sorted = [...lanes.entries()].filter(([, l]) => l.some((t) => t.status !== 'done'))
+      .sort((a, b) => b[1].filter((t) => t.status !== 'done').length - a[1].filter((t) => t.status !== 'done').length);
+    body = sorted.length ? html`<div class="lanes">${sorted.map(([name, list]) => html`<section class="lane"><h2><a href="#/tasks?${q({ project: name })}">${name || 'No project'}</a>
+        <span class="num muted">${list.filter((t) => t.status !== 'done').length} open</span></h2>
+      <div class="board">${COLUMNS.map(([st, label]) => column(st, st === 'done' ? 'Done (7 days)' : label, list.filter(inColumn(st)), false))}</div></section>`)}</div>`
+      : html`<p class="empty">No open tasks.</p>`;
+  }
+  view.innerHTML = html`<h1 class="page">Tasks</h1><p class="lede">Durable to-dos Claude and you share across sessions and machines. Drag a card to another column to change its status; Claude moves them with <code>task_update</code>.</p>
     <form class="composer" id="new-task"><div class="line"><input type="text" name="title" placeholder="New task, as an action" aria-label="New task" required>
       <select name="project" aria-label="Project">${opts}</select><select name="priority" aria-label="Priority"><option value="2">Normal</option><option value="1">High</option><option value="3">Low</option></select>
       <button type="submit">Add task</button></div></form>
-    <div class="toolbar"><select id="filter-project" aria-label="Show project"><option value="">All projects</option>${raw(opts.s.replace('<option value="">No project</option>', ''))}</select></div>
-    <div class="board">${COLUMNS.map(([st, label]) => {
-      const col = tasks.filter((t) => t.status === st || (st === 'done' && t.status === 'cancelled'));
-      return html`<section class="col"><h3><span>${label}</span><span class="num">${col.length}</span></h3><ol>${col.slice(0, st === 'done' ? 30 : 200).map((t) => html`
-        <li class="task p${t.priority}"><span class="t" data-ref="I${t.id}">${t.title}</span>
-          <div class="meta">${refLink(`I${t.id}`)}${!project && t.project ? html`<span>${t.project}</span>` : ''}${t.due_at ? html`<span>due ${dayOf(t.due_at)}</span>` : ''}<span>${ago(t.updated_at)}</span></div></li>`)}</ol></section>`;
-    })}</div>`;
+    <div class="toolbar"><select id="filter-project" aria-label="Show project"><option value="">All projects, by project</option>${raw(opts.s.replace('<option value="">No project</option>', ''))}</select>
+      ${project ? html`<a class="muted" href="/api/export?${q({ project })}" download>Export notes and tasks (Markdown)</a>` : ''}</div>
+    <p id="board-error" class="error" role="alert"></p>${body}`;
+  enableDrag(view);
   $('#filter-project').value = project;
   $('#filter-project').addEventListener('change', (e) => { location.hash = `#/tasks?${q({ project: e.target.value })}`; });
   $('#new-task').addEventListener('submit', async (e) => {

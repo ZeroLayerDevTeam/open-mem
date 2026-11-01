@@ -1,16 +1,20 @@
 #!/usr/bin/env node
 // claude-open-mem CLI (see HELP).
 import fs from 'node:fs';
+import path from 'node:path';
 import { addDevice, createAdminToken, hasAdminToken, listDevices, removeDevice } from './auth.mjs';
 import { DEFAULT_SETTINGS, dataDir, dataPath, deviceName, loadSettings, log, saveSettings, VERSION } from './config.mjs';
 import { openDb } from './db.mjs';
 import { claudeMemDbPath, installedPluginIds, importClaudeMem, uninstallClaudeMem } from './claudemem.mjs';
 import { busyReason } from './busy.mjs';
 import { resolveProvider, unloadOllama } from './llm.mjs';
-import { drain, generateBrief } from './queue.mjs';
+import { drain, generateBrief, reviewNotes } from './queue.mjs';
+import { call } from './backend.mjs';
+import { exportFileName, itemsMarkdown } from './export.mjs';
 import { serve } from './server.mjs';
-import { formatIndex, redactExisting, search, stats } from './store.mjs';
+import { formatIndex, redactExisting, stats } from './store.mjs';
 import { pushPending, remoteFetch } from './sync.mjs';
+import { countPending, embedPending, hybridSearch } from './semantic.mjs';
 
 const HELP = `claude-open-mem ${VERSION}
 Usage: node cli.mjs <command> [options]
@@ -22,6 +26,10 @@ Usage: node cli.mjs <command> [options]
   search <query> [--project P]   Search memory from the terminal
   redact                         Re-scan stored memory and redact secrets
   brief <project>                Regenerate a project's brief now (needs an LLM)
+  review-notes <project>         Ask the LLM which notes look outdated, duplicated or contradictory
+  embed [--all]                  Embed records for semantic search now (default up to embedPerDrain; --all: every one)
+  export [--project P] [--out DIR]
+                                 Notes and tasks as Markdown, one file per project (default folder ./open-mem-export)
   config                         Show settings
   config set <key> <value>       Change a setting (e.g. provider ollama, model gemma3:12b)
   uninstall-claude-mem [--move-data] [--dry-run] [--yes]
@@ -116,11 +124,23 @@ async function main() {
       process.exitCode = reason ? 0 : 1;
     } else if (cmd === 'search') {
       const project = option(args, '--project');
-      console.log(formatIndex(search(db, { query: args.join(' '), project, limit: 30 })));
+      console.log(formatIndex(await hybridSearch(db, { query: args.join(' '), project, limit: 30 }, settings)));
     } else if (cmd === 'brief') {
       const provider = await resolveProvider(settings);
       if (provider.kind === 'none') throw new Error(`no LLM available: ${provider.reason}`);
       console.log((await generateBrief(db, args.join(' '), provider, settings)) ? 'brief updated' : 'no summaries for that project');
+    } else if (cmd === 'review-notes') {
+      const provider = await resolveProvider(settings);
+      if (provider.kind === 'none') throw new Error(`no LLM available: ${provider.reason}`);
+      const flags = await reviewNotes(db, args.join(' '), provider, settings);
+      console.log(flags.length ? flags.map((f) => `${f.ids.join(', ')} ${f.kind}: ${f.reason}`).join('
+') : 'nothing to fix');
+    } else if (cmd === 'embed') {
+      const all = flag(args, '--all');
+      const n = await embedPending(db, settings, { max: all ? Number.MAX_SAFE_INTEGER : settings.embedPerDrain });
+      console.log(`embedded ${n} record(s), ${countPending(db)} left`);
+    } else if (cmd === 'export') {
+      await exportCmd(db, settings, args);
     } else if (cmd === 'uninstall-claude-mem') {
       const dryRun = flag(args, '--dry-run');
       const moveData = flag(args, '--move-data');
@@ -154,6 +174,28 @@ async function main() {
   }
 }
 
+// Notes and tasks of every project (or one) as Markdown files. In remote mode they come from the server.
+async function exportCmd(db, settings, args) {
+  const project = option(args, '--project');
+  const out = path.resolve(option(args, '--out') || 'open-mem-export');
+  const items = [];
+  for (let offset = 0; ; offset += 500) {
+    const { result } = await call('itemsList', { project: project || undefined, limit: 500, offset }, { db: () => db, settings });
+    items.push(...result);
+    if (result.length < 500) break;
+  }
+  if (!items.length) return console.log('No notes or tasks to export.');
+  const byProject = new Map();
+  for (const i of items) {
+    const key = i.project || '';
+    if (!byProject.has(key)) byProject.set(key, []);
+    byProject.get(key).push(i);
+  }
+  fs.mkdirSync(out, { recursive: true });
+  for (const [name, list] of byProject) fs.writeFileSync(path.join(out, exportFileName(name)), itemsMarkdown(name, list));
+  console.log(`exported ${items.length} note(s)/task(s) of ${byProject.size} project(s) to ${out}`);
+}
+
 async function serveCmd(db, settings, args) {
   const quiet = flag(args, '--quiet');
   const host = option(args, '--host') || settings.webHost;
@@ -165,6 +207,13 @@ async function serveCmd(db, settings, args) {
     throw err;
   }
   fs.writeFileSync(dataPath('serve.pid'), String(process.pid));
+  // A shared server also holds notes and records pushed by clients: drain and run the upkeep (briefs, notes review,
+  // embeddings) on a timer, not only when a session runs on this machine.
+  if (settings.serveDrainMinutes > 0) {
+    const tick = () => drain(db, settings, { sync: false }).catch((err) => log('warn', `scheduled drain failed: ${err.message}`));
+    setInterval(tick, settings.serveDrainMinutes * 60000).unref();
+    setTimeout(tick, 30000).unref();
+  }
   const msg = `open-mem web viewer on http://${host}:${port}${hasAdminToken(db) ? '' : ' (no admin token yet: run `token init`)'}`;
   log('info', msg);
   if (!quiet) console.log(msg);

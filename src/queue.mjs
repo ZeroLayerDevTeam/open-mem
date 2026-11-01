@@ -8,10 +8,11 @@ import { getMeta, setMeta, transaction } from './db.mjs';
 import { isNetworkError } from './backend.mjs';
 import { listItems } from './items.mjs';
 import { busyReason } from './busy.mjs';
-import { BRIEF_SYSTEM, completeJson, resolveProvider, OBSERVATION_SYSTEM, SUMMARY_SYSTEM, unloadOllama } from './llm.mjs';
+import { BRIEF_SYSTEM, completeJson, NOTES_REVIEW_SYSTEM, resolveProvider, OBSERVATION_SYSTEM, SUMMARY_SYSTEM, unloadOllama } from './llm.mjs';
 import { sessionMeta } from './meta.mjs';
 import { redact } from './redact.mjs';
-import { clip as clipLine, insertObservation, promptText, sessionInfo, turnObservations, upsertSummary } from './store.mjs';
+import { clip as clipLine, insertObservation, notesReview, reviewKey, promptText, sessionInfo, turnObservations, upsertSummary } from './store.mjs';
+import { embedPending } from './semantic.mjs';
 import { pushPending } from './sync.mjs';
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cli.mjs');
@@ -228,6 +229,57 @@ async function refreshBriefs(db, projects, provider, settings) {
   }
 }
 
+// --- notes review -------------------------------------------------------------------------------------
+
+// Projects with at least two active notes, one of them changed since the last review.
+function projectsToReview(db, settings) {
+  const minGap = settings.notesReviewHours * 3600000;
+  return db.prepare(`SELECT project, max(updated_at) last FROM items WHERE kind = 'note' AND status = 'active' AND project IS NOT NULL
+    GROUP BY project COLLATE NOCASE HAVING count(*) >= 2`).all()
+    .filter((p) => { const r = notesReview(db, p.project); return !r || (p.last > r.at && Date.now() - r.at >= minGap); })
+    .map((p) => p.project);
+}
+
+export async function reviewNotes(db, project, provider, settings) {
+  const notes = listItems(db, { kind: 'note', project, status: 'active', limit: 60 }).sort((a, b) => b.updated_at - a.updated_at);
+  const brief = db.prepare('SELECT body FROM briefs WHERE project = ?').get(project)?.body || '(none)';
+  const user = [`Project: ${project}`, `Brief:\n${brief}`,
+    `Notes:\n${notes.map((n) => `- I${n.id} (${new Date(n.updated_at).toISOString().slice(0, 10)}) ${n.title}: ${clipLine(n.body, 400)}`).join('\n')}`].join('\n\n');
+  const reply = await completeJson(provider, NOTES_REVIEW_SYSTEM, user, settings.llmTimeoutMs);
+  const known = new Set(notes.map((n) => `I${n.id}`));
+  const flags = (Array.isArray(reply.flags) ? reply.flags : [])
+    .map((f) => ({ ids: (Array.isArray(f.ids) ? f.ids : []).map((x) => `I${String(x).replace(/^I/i, '')}`).filter((x) => known.has(x)),
+      kind: ['contradiction', 'outdated', 'duplicate'].includes(f.kind) ? f.kind : 'outdated', reason: clipLine(f.reason, 240) }))
+    .filter((f) => f.ids.length && f.reason).slice(0, 8);
+  setMeta(db, reviewKey(project), JSON.stringify({ at: Date.now(), flags }));
+  return flags;
+}
+
+// Briefs, notes review and embeddings: the LLM work that does not come from the queue. Stops when a game starts.
+async function upkeep(db, touched, provider, settings, checkBusy) {
+  await refreshBriefs(db, touched, provider, settings);
+  // A client of a shared server reads notes and searches there: the server reviews and embeds, not each client.
+  if (settings.mode === 'remote') return;
+  if (provider.kind !== 'none' && settings.notesReview) {
+    for (const project of projectsToReview(db, settings)) {
+      if (await checkBusy()) return;
+      try {
+        const flags = await reviewNotes(db, project, provider, settings);
+        log('info', `notes of ${project} reviewed: ${flags.length} flag(s)`);
+      } catch (err) {
+        log('warn', `notes review for ${project} failed: ${err.message}`);
+        if (isNetworkError(err)) break;
+      }
+    }
+  }
+  try {
+    const n = await embedPending(db, settings, { max: settings.embedPerDrain, stop: async () => Boolean(await checkBusy()) });
+    if (n) log('info', `embedded ${n} record(s)`);
+  } catch (err) {
+    log('warn', `embedding failed, will retry: ${err.message}`);
+  }
+}
+
 // Processes the queue until empty. Returns number of items handled.
 export async function drain(db, settings, { lock = true, provider: forced, sync = true, busy: isBusy = busyReason } = {}) {
   if (lock && !acquireLock()) return 0;
@@ -297,7 +349,7 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
       const n = db.prepare("SELECT count(*) n FROM queue WHERE status IN ('pending', 'processing')").get().n;
       log('info', `drain paused while ${busy} runs (${n} queue item(s) waiting)`);
       try { await unloadOllama(provider.baseUrl); } catch { /* Ollama already gone */ }
-    } else await refreshBriefs(db, touched, provider, settings);
+    } else await upkeep(db, touched, provider, settings, checkBusy);
     if (settings.mode === 'remote' && settings.serverUrl && sync) {
       try { await pushPending(db, settings); } catch (err) { log('warn', `sync failed, will retry: ${err.message}`); }
     }

@@ -8,6 +8,7 @@ import { checkAdminToken, checkWebSession, createWebSession, deleteWebSession, d
 import { log, VERSION } from './config.mjs';
 import { local } from './backend.mjs';
 import { deleteItem, TASK_STATUSES } from './items.mjs';
+import { exportFileName, itemsMarkdown } from './export.mjs';
 import { ingest } from './sync.mjs';
 import { feed, overview, projectDetail, projects, record, sessionDetail, sessions } from './views.mjs';
 
@@ -155,6 +156,14 @@ export function createServer(db, settings) {
     if (route === '/api/me') return send(res, 200, { authenticated: Boolean(who), kind: who?.kind ?? null, setup: hasAdminToken(db) });
     if (!who) throw new HttpError(401, 'login required');
 
+    if (req.method === 'GET' && route === '/api/export') {
+      const project = url.searchParams.get('project') || null;
+      const items = local.itemsList(db, { project: project || undefined, limit: 500 })
+        .filter((i) => (project ? true : !i.project));
+      return send(res, 200, itemsMarkdown(project, items), {
+        'content-type': 'text/markdown; charset=utf-8', 'content-disposition': `attachment; filename="${exportFileName(project)}"`,
+      });
+    }
     if (req.method === 'GET' && getRoutes[route]) return send(res, 200, getRoutes[route](url.searchParams));
     if (req.method !== 'POST') throw new HttpError(404, 'not found');
     if (who.kind === 'admin') checkOrigin(req);
@@ -173,7 +182,7 @@ export function createServer(db, settings) {
     const body = await readBody(req, 1024 * 1024);
     if (op === 'itemAdd' || op === 'itemUpdate') body.device = who.kind === 'device' ? who.device : 'web';
     try {
-      return send(res, 200, { result: local[op](db, body, settings) });
+      return send(res, 200, { result: await local[op](db, body, settings) });
     } catch (err) {
       if (err instanceof HttpError) throw err;
       throw new HttpError(400, err.message); // validation errors from items/store

@@ -9,7 +9,10 @@ user's Claude subscription (that was claude-mem's limit: it spends the 5-hour qu
   `src/store.mjs` records, search, recall, session context · `src/items.mjs` notes/tasks + history ·
   `src/views.mjs` web read models · `src/server.mjs` HTTP API + web (`web/`) · `src/auth.mjs` admin token, device keys,
   web sessions · `src/sync.mjs` client push / server ingest · `src/backend.mjs` local vs remote with fallback ·
-  `src/mcp-server.mjs` hand-written MCP stdio · `src/claudemem.mjs` import + uninstall · `src/cli.mjs`.
+  `src/mcp-server.mjs` hand-written MCP stdio · `src/claudemem.mjs` import + uninstall · `src/cli.mjs` ·
+  `src/semantic.mjs` Ollama embeddings + hybrid search (RRF over FTS and vectors) · `src/export.mjs` Markdown export.
+- `local.search` is async (hybrid search): `backend.call` and the server await `local[op]`.
+- Upkeep after each drain (`queue.upkeep`): briefs, notes review, embeddings; all stop while a game runs.
 - Data: `~/.claude-open-mem/` (`CLAUDE_OPEN_MEM_DATA_DIR` for tests). Schema version in `PRAGMA user_version` (`db.mjs`).
 - Test: `node --no-warnings --test "test/*.test.mjs"` · Validate: `claude plugin validate .`
 - Personal deployment notes (servers, IPs, keys) live in `DEPLOY.local.md` and `proyecto.md`, both gitignored —

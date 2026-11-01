@@ -378,7 +378,26 @@ function hotFiles(db, project, limit = 8) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit);
 }
 
-export function contextFor(db, project, settings, { cwd } = {}) {
+// The last LLM review of a project's notes: { at, flags: [{ ids, kind, reason }] } (written by the drainer).
+export const reviewKey = (project) => `notes_review:${String(project).toLowerCase()}`;
+export function notesReview(db, project) {
+  try { return JSON.parse(db.prepare('SELECT value FROM meta WHERE key = ?').get(reviewKey(project))?.value || 'null'); } catch { return null; }
+}
+
+// The last stretch of work before `until` across every project: the newest summary before it and those within
+// RECAP_SPAN_MS of it, newest first. Shown in the first session of the day ("what did I do last night?").
+const RECAP_SPAN_MS = 16 * 3600 * 1000;
+export function recapBefore(db, until, limit = 15) {
+  const rows = db.prepare(`SELECT id, project, request, completed, created_at FROM summaries WHERE created_at < ?
+    ORDER BY created_at DESC LIMIT 60`).all(until);
+  if (!rows.length) return [];
+  return rows.filter((r) => r.created_at >= rows[0].created_at - RECAP_SPAN_MS).slice(0, limit);
+}
+
+// Clock time in the client's zone (tz = its getTimezoneOffset(), minutes behind UTC).
+const clock = (ms, tz = 0) => new Date(Number(ms) - tz * 60000).toISOString().slice(11, 16);
+
+export function contextFor(db, project, settings, { cwd, recap } = {}) {
   const sums = db.prepare(`SELECT id, request, completed, next_steps, created_at FROM summaries
     WHERE project = ? COLLATE NOCASE ORDER BY created_at DESC LIMIT ?`).all(project, settings.contextSummaries);
   const obs = db.prepare(`SELECT id, type, title, narrative, created_at FROM observations
@@ -393,6 +412,16 @@ export function contextFor(db, project, settings, { cwd } = {}) {
   const refs = [];
   if (!sums.length && !obs.length && !tasks.length && !brief) {
     lines.push('No memory yet for this project. It builds up as you work.');
+  }
+  if (recap?.until) {
+    const last = recapBefore(db, Number(recap.until));
+    if (last.length) {
+      lines.push('', `## Last working session (${day(last[0].created_at)}, every project) — first session today`);
+      for (const r of last) {
+        refs.push(`S${r.id}`);
+        lines.push(`- S${r.id} ${clock(r.created_at, Number(recap.tz) || 0)} · ${r.project}: ${clip(r.request, 120)}${r.completed ? ` → ${clip(r.completed, 160)}` : ''}`);
+      }
+    }
   }
   if (brief) lines.push('', `## Project brief (${day(brief.generated_at)})`, brief.body.trim());
   if (tasks.length) {
@@ -415,6 +444,11 @@ export function contextFor(db, project, settings, { cwd } = {}) {
   if (notes.length) {
     lines.push('', '## Notes', ...notes.map((n) => `- I${n.id} ${clip(n.title, 120)}`));
     refs.push(...notes.map((n) => `I${n.id}`));
+  }
+  const review = notesReview(db, project);
+  if (review?.flags?.length) {
+    lines.push('', `## Notes that may need fixing (review of ${day(review.at)}; once confirmed, fix or archive them with task_update)`,
+      ...review.flags.map((f) => `- ${f.ids.join(', ')} ${f.kind}: ${clip(f.reason, 200)}`));
   }
   if (obs.length) {
     lines.push('', '## Recent observations');

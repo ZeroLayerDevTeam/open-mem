@@ -3,7 +3,8 @@
 // local database (writes are then pushed by the next sync).
 import { deviceName, log } from './config.mjs';
 import { addItem, listItems, updateItem } from './items.mjs';
-import { contextFor, getByRefs, recall, search, timeline } from './store.mjs';
+import { contextFor, getByRefs, recall, timeline } from './store.mjs';
+import { hybridSearch } from './semantic.mjs';
 import { remoteFetch } from './sync.mjs';
 
 export const isNetworkError = (err) => err?.name === 'TimeoutError' || err?.name === 'AbortError'
@@ -15,10 +16,10 @@ const isUnavailable = (err) => isNetworkError(err) || [502, 503].includes(err?.s
 
 // Plain functions shared by the server routes and local mode.
 export const local = {
-  search: (db, o) => search(db, o),
+  search: (db, o, settings) => hybridSearch(db, o, settings),
   timeline: (db, { anchor, before, after }) => timeline(db, anchor, before ?? 5, after ?? 5),
   get: (db, { ids }) => getByRefs(db, ids || []),
-  context: (db, { project, cwd }, settings) => contextFor(db, project, settings, { cwd }),
+  context: (db, { project, cwd, recap }, settings) => contextFor(db, project, settings, { cwd, recap }),
   recall: (db, { prompt, project, exclude, limit }) => recall(db, { prompt, project, exclude: new Set(exclude || []), limit }),
   itemsList: (db, o) => listItems(db, o),
   itemAdd: (db, o) => ({ id: addItem(db, o) }),
@@ -47,8 +48,8 @@ export async function call(op, args, { db, settings }) {
     } catch (err) {
       if (!isUnavailable(err)) throw err;
       log('warn', `server unreachable for ${op}, using local database: ${err.message}`);
-      return { result: local[op](db(), withDevice, settings), remote: false, fallback: true };
+      return { result: await local[op](db(), withDevice, settings), remote: false, fallback: true };
     }
   }
-  return { result: local[op](db(), withDevice, settings), remote: false };
+  return { result: await local[op](db(), withDevice, settings), remote: false };
 }

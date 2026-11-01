@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export const VERSION = '0.2.5';
+export const VERSION = '0.3.0';
 
 export const DEFAULT_SETTINGS = {
   // auto: use a local Ollama if reachable, otherwise store without an LLM.
@@ -32,11 +32,24 @@ export const DEFAULT_SETTINGS = {
   contextObservations: 12,
   contextSummaries: 3,
   contextTasks: 10,
+  // At session start: warn when the repo is not on its default branch; in the first session of the day (from 05:00),
+  // recap the last stretch of work across every project.
+  branchWarning: true,
+  dailyRecap: true,
   // Inject memory matching each prompt (FTS only, no LLM).
   recallOnPrompt: true,
   recallLimit: 5,
   // Regenerate a project's brief after this many new records.
   briefEvery: 25,
+  // Ollama embedding model for semantic search ('' = full-text only). Each drain embeds up to embedPerDrain records.
+  embedModel: 'embeddinggemma',
+  embedPerDrain: 2000,
+  // Ask the LLM which notes of a project look outdated, duplicated or contradictory, after a note changes
+  // (at most once every notesReviewHours per project). Shown at session start.
+  notesReview: true,
+  notesReviewHours: 12,
+  // Shared server (`cli serve`): drain the queue and run the upkeep above this often, in minutes (0 = never).
+  serveDrainMinutes: 10,
   excludedProjects: [],
   // Import new rows from an existing claude-mem database at session start.
   autoImportClaudeMem: true,

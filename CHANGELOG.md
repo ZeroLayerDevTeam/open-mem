@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0
+
+- Semantic search: records get Ollama embeddings (`embedModel`, default `embeddinggemma`) after each drain; search
+  merges full-text and vector results (reciprocal rank fusion). Falls back to full-text while a game runs, before
+  any vector exists, or when Ollama does not answer. `cli embed [--all]` backfills. Schema v3 (`embeddings` table,
+  vectors dropped by triggers when their record changes or is deleted).
+- Session start warns when the repo is on a branch already merged into the default one, or on one with unmerged
+  commits (`branchWarning`).
+- First session of the day (from 05:00): a recap of the last working session across every project (`dailyRecap`).
+- Notes review: the LLM flags contradictory, outdated or duplicated notes of a project after they change
+  (`notesReview`, `notesReviewHours`, `cli review-notes`). Shown at session start and on the project page.
+- Web: the Tasks page shows one board per project, and cards are dragged between columns to change their status.
+- Markdown export of a project's notes and tasks: `cli export`, `/api/export`, link on the project page.
+- `cli serve` drains the queue and runs the upkeep every `serveDrainMinutes` (default 10).
+
 ## 0.2.5
 
 - Game guard: while a game runs (`busyProcesses` exe names or folders, `busyPaths` game library folders such as

@@ -1,6 +1,6 @@
 // Read models for the web viewer. Everything returns plain JSON-safe objects.
 import { getItem, listItems } from './items.mjs';
-import { getByRefs, parseRef, stats } from './store.mjs';
+import { getByRefs, notesReview, parseRef, stats } from './store.mjs';
 
 const DAY = 24 * 3600 * 1000;
 
@@ -67,6 +67,7 @@ export function projectDetail(db, name) {
     tasks: listItems(db, { kind: 'task', project, limit: 200 }),
     notes: listItems(db, { kind: 'note', project, limit: 100 }),
     activity: activity(db, { project, days: 365 }),
+    review: notesReview(db, project),
   };
 }
 

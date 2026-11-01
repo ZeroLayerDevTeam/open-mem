@@ -119,7 +119,15 @@ Reply with ONLY a JSON object:
  "next_steps": "...", "notes": "..."}
 or {"skip": true}`;
 
-export const BRIEF_SYSTEM = `You maintain a short project brief that a coding assistant reads at the start of every session,
+export const NOTES_REVIEW_SYSTEM = `You review the durable notes a coding assistant keeps for one project.
+You receive the project brief and the notes (id, last update date, title, body), newest first.
+Flag only real problems a reader must resolve: two notes that contradict each other, a note that a newer one or the brief
+clearly supersedes (outdated), or two notes that say the same thing (duplicate). Do not flag notes that merely differ in topic.
+Write each reason in one short sentence, in the same language as the notes, naming what conflicts.
+Reply with ONLY a JSON object: {"flags": [{"ids": ["I12", "I30"], "kind": "contradiction|outdated|duplicate", "reason": "..."}]}
+or {"flags": []}`;
+
+export const BRIEF_SYSTEM =`You maintain a short project brief that a coding assistant reads at the start of every session,
 so it can start working without re-exploring the project. You receive the previous brief (may be empty), recent
 session summaries, open tasks, notes and the most-edited files.
 Write the brief in the same language as the summaries. At most 1200 characters, markdown bullets, no preamble.
