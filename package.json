@@ -1,6 +1,6 @@
 {
   "name": "claude-open-mem",
-  "version": "0.5.7",
+  "version": "0.6.0",
   "description": "Open, local-first persistent memory for Claude Code (MCP + hooks, SQLite FTS5, optional local LLM).",
   "type": "module",
   "license": "MIT",

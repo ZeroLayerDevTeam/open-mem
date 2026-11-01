@@ -4,17 +4,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { addDevice, createAdminToken, hasAdminToken, listDevices, removeDevice } from './auth.mjs';
 import { DEFAULT_SETTINGS, dataDir, dataPath, deviceName, loadSettings, log, saveSettings, VERSION } from './config.mjs';
-import { openDb } from './db.mjs';
+import { backupDb, openDb } from './db.mjs';
 import { claudeMemDbPath, installedPluginIds, importClaudeMem, uninstallClaudeMem } from './claudemem.mjs';
 import { busyReason } from './busy.mjs';
 import { resolveProvider, unloadOllama } from './llm.mjs';
-import { drain, drainerPid, generateBrief, reviewNotes, spawnDrainer } from './queue.mjs';
+import { drain, drainerPid, findLessons, generateBrief, reviewNotes, spawnDrainer } from './queue.mjs';
 import { withRecorder } from './llmstats.mjs';
 import { call } from './backend.mjs';
 import { exportFileName, itemsMarkdown } from './export.mjs';
 import { startGuard } from './guard.mjs';
 import { serve } from './server.mjs';
-import { formatIndex, redactExisting, stats } from './store.mjs';
+import { formatIndex, recallStats, redactExisting, stats } from './store.mjs';
 import { pushPending, remoteFetch } from './sync.mjs';
 import { countPending, embedPending, hybridSearch } from './semantic.mjs';
 import { runOffCommand, sendMagicPacket, wakeTick } from './wake.mjs';
@@ -30,9 +30,12 @@ Usage: node cli.mjs <command> [options]
   redact                         Re-scan stored memory and redact secrets
   brief <project>                Regenerate a project's brief now (needs an LLM)
   review-notes <project>         Ask the LLM which notes look outdated, duplicated or contradictory
+  lessons <project>              Ask the LLM which mistakes of a project came back in several sessions (rules to write down)
   embed [--all]                  Embed records for semantic search now (default up to embedPerDrain; --all: every one)
   export [--project P] [--out DIR]
                                  Notes and tasks as Markdown, one file per project (default folder ./open-mem-export)
+  backup [--out FILE] [--keep N] Consistent copy of the database, safe while it is in use (checked with integrity_check).
+                                 Default: backups/ in the data folder, keeping the newest N (7)
   config                         Show settings
   config set <key> <value>       Change a setting (e.g. provider ollama, model gemma3:12b)
   config set llmKeepAlive <time> How long Ollama keeps the model on the GPU after the last call
@@ -119,6 +122,9 @@ async function main() {
         + ` · web admin token ${hasAdminToken(db) ? 'set' : 'not set'}`);
       const cm = claudeMemDbPath();
       console.log(`claude-mem: ${cm ? `database ${cm}` : 'no database'} · plugin ${installedPluginIds().join(', ') || 'not installed'}`);
+      const r = recallStats(db, settings.recallMuteAfter);
+      console.log(`prompt recall (90 days): ${r.shown} shown in ${r.sessions} sessions · ${r.shown ? Math.round((100 * r.used) / r.shown) : 0}% used`
+        + ` · ${r.muted} muted (shown in ${settings.recallMuteAfter}+ sessions, never used)`);
       if (s.projects.length) console.log(`top projects: ${s.projects.map((p) => `${p.project} ${p.n}`).join(', ')}`);
     } else if (cmd === 'import') {
       const quiet = flag(args, '--quiet');
@@ -151,10 +157,17 @@ async function main() {
       if (provider.kind === 'none') throw new Error(`no LLM available: ${provider.reason}`);
       const flags = await reviewNotes(db, args.join(' '), provider, settings);
       console.log(flags.length ? flags.map((f) => `${f.ids.join(', ')} ${f.kind}: ${f.reason}`).join('\n') : 'nothing to fix');
+    } else if (cmd === 'lessons') {
+      const provider = withRecorder(db, await resolveProvider(settings));
+      if (provider.kind === 'none') throw new Error(`no LLM available: ${provider.reason}`);
+      const found = await findLessons(db, args.join(' '), provider, settings);
+      console.log(found.length ? found.map((l) => `- ${l.rule} (${l.ids.join(', ')})`).join('\n') : 'no repeated mistakes');
     } else if (cmd === 'embed') {
       const all = flag(args, '--all');
       const n = await embedPending(db, settings, { max: all ? Number.MAX_SAFE_INTEGER : settings.embedPerDrain });
       console.log(`embedded ${n} record(s), ${countPending(db)} left`);
+    } else if (cmd === 'backup') {
+      backupCmd(db, args);
     } else if (cmd === 'export') {
       await exportCmd(db, settings, args);
     } else if (cmd === 'uninstall-claude-mem') {
@@ -210,6 +223,20 @@ async function exportCmd(db, settings, args) {
   fs.mkdirSync(out, { recursive: true });
   for (const [name, list] of byProject) fs.writeFileSync(path.join(out, exportFileName(name)), itemsMarkdown(name, list));
   console.log(`exported ${items.length} note(s)/task(s) of ${byProject.size} project(s) to ${out}`);
+}
+
+function backupCmd(db, args) {
+  const out = option(args, '--out');
+  const keep = Number(option(args, '--keep') || 7);
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+  const dest = path.resolve(out || dataPath('backups', `open-mem-${stamp}.db`));
+  const size = backupDb(db, dest);
+  console.log(`backup ok: ${dest} (${size} bytes)`);
+  if (out) return;
+  // Only the default folder is pruned: a path given with --out belongs to the caller's own rotation.
+  const dir = path.dirname(dest);
+  const old = fs.readdirSync(dir).filter((f) => /^open-mem-\d{8}-\d{6}\.db$/.test(f)).sort().slice(0, -Math.max(1, keep));
+  for (const f of old) fs.rmSync(path.join(dir, f));
 }
 
 async function serveCmd(db, settings, args) {

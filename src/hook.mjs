@@ -86,16 +86,30 @@ async function userPrompt(db, input, settings, project) {
   const device = deviceName(settings);
   m.addPrompt(db, { sessionId: input.session_id, project, cwd: input.cwd, device, text: input.prompt });
   if (!settings.recallOnPrompt) return;
-  const exclude = [...m.injectedRefs(db, input.session_id)];
+  const exclude = [...m.injectedRefs(db, input.session_id), ...m.mutedRefs(db, settings.recallMuteAfter)];
   const { result: rows } = await m.call('recall', { prompt: input.prompt, project, exclude, limit: settings.recallLimit },
     { db: () => db, settings });
   if (!rows?.length) return;
   m.markInjected(db, input.session_id, rows.map(m.refId));
+  m.logRecall(db, input.session_id, rows);
   out({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: m.formatRecall(rows) } });
+}
+
+const FETCH_TOOLS = /^mcp__plugin_open-mem_open-mem__(get_observations|timeline)$/;
+
+// Did this call use something prompt recall showed? A fetch of the record, or work on one of its files.
+function noteRecallUse(db, input, tool) {
+  const ti = input.tool_input || {};
+  if (FETCH_TOOLS.test(tool)) {
+    m.markRecallUsed(db, input.session_id, { refs: [...(Array.isArray(ti.ids) ? ti.ids : []), ti.anchor].filter((x) => x != null) });
+  } else if (ti.file_path || ti.notebook_path) {
+    m.markRecallUsed(db, input.session_id, { file: ti.file_path || ti.notebook_path });
+  }
 }
 
 function postTool(db, input, settings, project) {
   const tool = input.tool_name || '';
+  if (settings.recallOnPrompt) noteRecallUse(db, input, tool);
   if (!tool || settings.skipTools.includes(tool) || OWN_TOOLS.test(tool)) return;
   m.ensureSession(db, { sessionId: input.session_id, project, cwd: input.cwd, device: deviceName(settings) });
   m.enqueue(db, 'observation', input.session_id, project, {

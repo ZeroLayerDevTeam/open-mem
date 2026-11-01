@@ -8,11 +8,11 @@ import { getMeta, setMeta, transaction } from './db.mjs';
 import { isNetworkError } from './backend.mjs';
 import { listItems } from './items.mjs';
 import { busyReason } from './busy.mjs';
-import { BRIEF_SYSTEM, completeJson, NOTES_REVIEW_SYSTEM, resolveProvider, OBSERVATION_SYSTEM, SUMMARY_SYSTEM, unloadOllama } from './llm.mjs';
+import { BRIEF_SYSTEM, completeJson, LESSONS_SYSTEM, NOTES_REVIEW_SYSTEM, resolveProvider, OBSERVATION_SYSTEM, SUMMARY_SYSTEM, unloadOllama } from './llm.mjs';
 import { withRecorder } from './llmstats.mjs';
 import { sessionMeta } from './meta.mjs';
 import { redact } from './redact.mjs';
-import { clip as clipLine, insertObservation, notesReview, reviewKey, promptText, sessionInfo, turnObservations, upsertSummary } from './store.mjs';
+import { clip as clipLine, insertObservation, lessons, lessonsKey, notesReview, pruneRecallLog, reviewKey, promptText, sessionInfo, turnObservations, upsertSummary } from './store.mjs';
 import { embedPending } from './semantic.mjs';
 import { pushPending, remoteFetch } from './sync.mjs';
 import { reportGpu } from './gpu.mjs';
@@ -266,8 +266,40 @@ export async function reviewNotes(db, project, provider, settings) {
   return flags;
 }
 
+// --- repeated mistakes ---------------------------------------------------------------------------------
+const LESSONS_WINDOW_MS = 90 * 86400000;
+
+// Projects with new bug fixes since their last lessons run (at most once a day each).
+function projectsForLessons(db) {
+  const since = Date.now() - LESSONS_WINDOW_MS;
+  return db.prepare(`SELECT project, count(*) n, max(created_at) last FROM observations WHERE type = 'bugfix' AND created_at >= ?
+    AND project IS NOT NULL GROUP BY project COLLATE NOCASE HAVING n >= 4`).all(since)
+    .filter((p) => { const l = lessons(db, p.project); return !l || (p.last > l.at && Date.now() - l.at >= 86400000); })
+    .map((p) => p.project);
+}
+
+export async function findLessons(db, project, provider, settings) {
+  const rows = db.prepare(`SELECT id, session_id, title, subtitle, created_at FROM observations WHERE type = 'bugfix'
+    AND project = ? COLLATE NOCASE AND created_at >= ? ORDER BY created_at DESC LIMIT 80`).all(project, Date.now() - LESSONS_WINDOW_MS);
+  const sessions = new Map();
+  const user = [`Project: ${project}`, `Bug fixes:\n${rows.map((r) => {
+    if (!sessions.has(r.session_id)) sessions.set(r.session_id, sessions.size + 1);
+    return `- ${r.id} (${new Date(r.created_at).toISOString().slice(0, 10)}, session ${sessions.get(r.session_id)}) ${clipLine(r.title, 140)}: ${clipLine(r.subtitle, 200)}`;
+  }).join('\n')}`].join('\n\n');
+  const reply = await completeJson(provider, LESSONS_SYSTEM, user, settings.llmTimeoutMs);
+  const bySession = new Map(rows.map((r) => [String(r.id), r.session_id]));
+  const found = (Array.isArray(reply.lessons) ? reply.lessons : [])
+    .map((l) => ({ ids: [...new Set((Array.isArray(l.ids) ? l.ids : []).map((x) => String(x).trim()).filter((x) => bySession.has(x)))],
+      rule: redact(clipLine(l.rule, 240)) }))
+    // A lesson needs the same mistake in two different sessions, whatever the model claims.
+    .filter((l) => l.rule && new Set(l.ids.map((x) => bySession.get(x))).size >= 2).slice(0, 8);
+  setMeta(db, lessonsKey(project), JSON.stringify({ at: Date.now(), lessons: found }));
+  return found;
+}
+
 // Briefs, notes review and embeddings: the LLM work that does not come from the queue. Stops when a game starts.
 async function upkeep(db, touched, provider, settings, checkBusy) {
+  pruneRecallLog(db);
   await refreshBriefs(db, touched, provider, settings);
   // A client of a shared server reads notes and searches there: the server reviews and embeds, not each client.
   if (settings.mode === 'remote') return;
@@ -279,6 +311,17 @@ async function upkeep(db, touched, provider, settings, checkBusy) {
         log('info', `notes of ${project} reviewed: ${flags.length} flag(s)`);
       } catch (err) {
         log('warn', `notes review for ${project} failed: ${err.message}`);
+        if (isNetworkError(err)) break;
+      }
+    }
+  }
+  if (provider.kind !== 'none' && settings.lessonsReview) {
+    for (const project of projectsForLessons(db)) {
+      if (await checkBusy()) return;
+      try {
+        log('info', `lessons of ${project}: ${(await findLessons(db, project, provider, settings)).length}`);
+      } catch (err) {
+        log('warn', `lessons for ${project} failed: ${err.message}`);
         if (isNetworkError(err)) break;
       }
     }

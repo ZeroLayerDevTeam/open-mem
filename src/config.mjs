@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export const VERSION = '0.5.7';
+export const VERSION = '0.6.0';
 
 export const DEFAULT_SETTINGS = {
   // auto: use a local Ollama if reachable, otherwise store without an LLM.
@@ -40,6 +40,8 @@ export const DEFAULT_SETTINGS = {
   // Inject memory matching each prompt (FTS only, no LLM).
   recallOnPrompt: true,
   recallLimit: 5,
+  // Stop recalling a record shown in this many sessions that never used it (fetched it or touched its files); 0 = never.
+  recallMuteAfter: 5,
   // Regenerate a project's brief after this many new records.
   briefEvery: 25,
   // Ollama embedding model for semantic search ('' = full-text only). Each drain embeds up to embedPerDrain records.
@@ -49,6 +51,9 @@ export const DEFAULT_SETTINGS = {
   // (at most once every notesReviewHours per project). Shown at session start.
   notesReview: true,
   notesReviewHours: 12,
+  // Once a day per project with new bug fixes, ask the LLM which mistakes came back in two or more sessions, and
+  // propose a rule for each. Shown on the project page of the web viewer only (nothing goes into Claude's context).
+  lessonsReview: true,
   // Shared server (`cli serve`): drain the queue and run the upkeep above this often, in minutes (0 = never).
   serveDrainMinutes: 10,
   // Shared server whose Ollama runs on another machine: wake that machine (Wake-on-LAN, wakeMac '' = never) when queued
