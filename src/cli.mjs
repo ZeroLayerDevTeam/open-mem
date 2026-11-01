@@ -8,7 +8,7 @@ import { openDb } from './db.mjs';
 import { claudeMemDbPath, installedPluginIds, importClaudeMem, uninstallClaudeMem } from './claudemem.mjs';
 import { busyReason } from './busy.mjs';
 import { resolveProvider, unloadOllama } from './llm.mjs';
-import { drain, generateBrief, reviewNotes } from './queue.mjs';
+import { drain, drainerPid, generateBrief, reviewNotes, spawnDrainer } from './queue.mjs';
 import { withRecorder } from './llmstats.mjs';
 import { call } from './backend.mjs';
 import { exportFileName, itemsMarkdown } from './export.mjs';
@@ -16,6 +16,7 @@ import { serve } from './server.mjs';
 import { formatIndex, redactExisting, stats } from './store.mjs';
 import { pushPending, remoteFetch } from './sync.mjs';
 import { countPending, embedPending, hybridSearch } from './semantic.mjs';
+import { runOffCommand, sendMagicPacket, wakeTick } from './wake.mjs';
 
 const HELP = `claude-open-mem ${VERSION}
 Usage: node cli.mjs <command> [options]
@@ -213,6 +214,18 @@ async function serveCmd(db, settings, args) {
     const tick = () => drain(db, settings, { sync: false }).catch((err) => log('warn', `scheduled drain failed: ${err.message}`));
     setInterval(tick, settings.serveDrainMinutes * 60000).unref();
     setTimeout(tick, 30000).unref();
+  }
+  if (settings.wakeMac) {
+    const deps = {
+      llmUp: async () => (await resolveProvider(settings)).kind !== 'none', drainerRunning: () => Boolean(drainerPid()),
+      startDrainer: () => spawnDrainer(), wake: sendMagicPacket, off: runOffCommand,
+    };
+    let busy = false;
+    setInterval(async () => {
+      if (busy) return;
+      busy = true;
+      try { await wakeTick(db, settings, deps); } catch (err) { log('warn', `wake check failed: ${err.message}`); } finally { busy = false; }
+    }, 30000).unref();
   }
   const msg = `open-mem web viewer on http://${host}:${port}${hasAdminToken(db) ? '' : ' (no admin token yet: run `token init`)'}`;
   log('info', msg);

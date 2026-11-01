@@ -50,6 +50,13 @@ export const DEFAULT_SETTINGS = {
   notesReviewHours: 12,
   // Shared server (`cli serve`): drain the queue and run the upkeep above this often, in minutes (0 = never).
   serveDrainMinutes: 10,
+  // Shared server whose Ollama runs on another machine: wake that machine (Wake-on-LAN, wakeMac '' = never) when queued
+  // work waits for the LLM, and run wakeOffCommand wakeOffMinutes after its last LLM call. Only a machine this server
+  // woke is turned off; the command exits 0 when it turned it off, 3 when the machine is in use and stays on.
+  wakeMac: '',
+  wakeBroadcast: '255.255.255.255',
+  wakeOffMinutes: 10,
+  wakeOffCommand: '',
   excludedProjects: [],
   // Import new rows from an existing claude-mem database at session start.
   autoImportClaudeMem: true,
