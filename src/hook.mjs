@@ -40,6 +40,17 @@ function pidAlive(file) {
 
 const out = (obj) => process.stdout.write(JSON.stringify(obj));
 
+// Once per machine: no LLM answers, so tell the user (not Claude: systemMessage) how to set one up.
+async function setupHint(db, settings) {
+  if ((settings.provider || 'auto') !== 'auto' || m.getMeta(db, 'setup_hint_at')) return null;
+  m.setMeta(db, 'setup_hint_at', Date.now());
+  if ((await m.resolveProvider(settings)).kind !== 'none') return null;
+  return 'claude-open-mem: no local LLM found, so tool calls are stored as they are, without summaries, project briefs or '
+    + 'semantic search. Setup checks your GPU, installs Ollama and the model that fits it, and asks before downloading anything:\n'
+    + `  node "${path.join(ROOT, 'src', 'cli.mjs')}" setup\n`
+    + 'Without a usable GPU it lists the other options (shared server, OpenAI-compatible endpoint, CPU).';
+}
+
 async function sessionStart(db, input, settings, project) {
   const device = deviceName(settings);
   const git = m.gitInfo(input.cwd);
@@ -65,6 +76,8 @@ async function sessionStart(db, input, settings, project) {
     if (settings.webAutostart && !pidAlive(dataPath('serve.pid'))) spawnCli('serve', '--quiet');
   }
   if (settings.guardAllow.length && !pidAlive(dataPath('guard.pid'))) spawnCli('guard', '--quiet');
+  const hint = await setupHint(db, settings);
+  if (hint) notices.push(hint);
 
   const args = { project, cwd: input.cwd, ...(firstToday ? { recap: { until: dayStart, tz: new Date().getTimezoneOffset() } } : {}) };
   let { result: ctx, fallback } = await m.call('context', args, { db: () => db, settings });
@@ -154,6 +167,7 @@ if (major < 22 || (major === 22 && minor < 13)) {
   try {
     m = {
       ...(await import('./db.mjs')),
+      ...(await import('./llm.mjs')),
       ...(await import('./auth.mjs')),
       ...(await import('./backend.mjs')),
       ...(await import('./claudemem.mjs')),

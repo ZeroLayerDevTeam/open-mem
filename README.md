@@ -17,7 +17,21 @@ claude-open-mem records what happens in your Claude Code sessions, compresses it
 
 ## Install
 
-Requirements: Claude Code, Node.js ≥ 22.13 on `PATH`. Optional: Ollama with a chat model (`ollama pull gemma3:12b`, or `gemma3:4b` / `qwen3:8b` on smaller GPUs).
+Requirements: Claude Code, Node.js ≥ 22.13 on `PATH`, and for the full feature set a GPU for the local LLM (see [GPU and local model](#gpu-and-local-model) below: **read it before installing**).
+
+The installer checks your GPU before installing anything, tells you when there is none, then installs the plugin and runs `setup` (Ollama + the model that fits your GPU, after asking):
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/Noel18101987/claude-open-mem/main/install.ps1 | iex
+```
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/Noel18101987/claude-open-mem/main/install.sh | sh
+```
+
+Or by hand:
 
 ```bash
 claude plugin marketplace add Noel18101987/claude-open-mem
@@ -33,7 +47,33 @@ Restart Claude Code. On the first session start claude-open-mem:
 4. imports your claude-mem database in the background if it finds one (`~/.claude-mem/claude-mem.db`);
 5. starts injecting memory for the current project.
 
-The plugin id is `open-mem` (Claude Code reserves plugin names that start with `claude-`).
+The plugin id is `open-mem` (Claude Code reserves plugin names that start with `claude-`). Installed by hand, run `setup` afterwards (the first session also reminds you when no LLM answers): `node "$(cat ~/.claude-open-mem/plugin-root)/src/cli.mjs" setup`.
+
+## GPU and local model
+
+> **Important:** the summaries, project briefs, notes review and semantic search come from a local LLM that runs on your GPU through [Ollama](https://ollama.com). Without a usable GPU open-mem still installs and works, with fewer features.
+
+`setup` detects the GPU, installs Ollama when it is missing (winget on Windows, Homebrew on macOS, Ollama's install script on Linux, which asks for sudo) and downloads the model that fits. It shows the plan and the download size and asks first (`--yes` skips the question, `--model M` picks another model). `check` only shows what it found.
+
+| Usable GPU memory | Chat model | Download | Notes |
+|---|---|---|---|
+| 11 GB or more | `gemma3:12b` | 8.1 GB | Tested in depth; best observations and summaries |
+| 5.5 to 11 GB | `gemma3:4b` | 3.3 GB | Good enough, shorter observations |
+| 2 to 5.5 GB | `gemma3:1b` | 0.8 GB | Smallest; rougher observations |
+| No usable GPU | none | | See below |
+
+Every tier also gets `embeddinggemma` (0.6 GB) for semantic search.
+
+How the GPU is found: NVIDIA through `nvidia-smi`; any card on Windows through the display adapters in the registry (WMI reports at most 4 GB, so it is not used); AMD on Linux through amdgpu's `mem_info_vram_total`; Apple Silicon counts two thirds of its unified memory. Integrated graphics (Intel UHD/Iris Xe) and virtual display adapters do not count; Intel Arc does.
+
+No usable GPU (a typical office laptop) leaves these options, `setup` lists them instead of installing anything:
+
+- **No LLM:** tool calls are stored as they are and full-text search works; no summaries, briefs or semantic search.
+- **Shared server:** point this machine at an open-mem server on a machine with a GPU (`remote connect`, see [Sharing memory between machines](#sharing-memory-between-machines)).
+- **OpenAI-compatible endpoint:** `config set provider openai`, plus `baseUrl`, `model` and `apiKey`.
+- **CPU:** `setup --cpu` installs `gemma3:1b` on the CPU. It works, but each record takes many seconds and the CPU stays busy while the queue drains.
+
+The model shares the GPU with games: while one runs the queue waits and the model is unloaded (see Gaming below).
 
 ## How it works
 
@@ -143,6 +183,8 @@ node "$OM" review-notes my-project  # check a project's notes for contradictions
 node "$OM" lessons my-project     # look for mistakes fixed in several sessions now
 node "$OM" backup [--out FILE] [--keep N]  # consistent copy of the database while it is in use
 node "$OM" export [--project P] [--out DIR]  # notes and tasks as Markdown, one file per project
+node "$OM" check                  # GPU found and the model it fits (exit 2 = no usable GPU)
+node "$OM" setup [--yes] [--model M] [--cpu]  # install Ollama and the model that fits the GPU
 node "$OM" serve | token init | token reset | device add|list|remove | remote connect|disconnect
 node "$OM" config [set key value]
 ```
