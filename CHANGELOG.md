@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 - Web viewer redesign: responsive layout from phone to wide screen (off-canvas menu, stacked tables, no horizontal scroll), a search box in the top bar on every page (`/` focuses it), record side panel as a modal dialog, toasts after saving, skeletons while loading, a year-long activity map, project paths shown from the project folder.
 - Server-side pagination with numbered pages for the timeline, sessions, notes and search (`page`, `size`; responses carry `total`). The page and filters live in the URL.
