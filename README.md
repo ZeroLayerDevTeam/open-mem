@@ -91,6 +91,7 @@ Sections:
 - **Tasks**: one board per project; drag a card to change its status (on a phone, hold it for a moment first).
 - **Notes**: searchable list with an inline editor.
 - **Search**: the same hybrid search Claude uses, with kind, project, type and date filters, highlighted matches and an excerpt per result.
+- **Local LLM**: live state of the compression model (working, ready, paused for a game, down), the models Ollama holds in memory and how much of each sits on the GPU, GPU memory, load, temperature and power (`nvidia-smi`), generation speed and calls over 24 hours, 7 days or 30 days (charts with a table view), the queue with what is next and what failed, installed models, semantic index coverage and the latest calls with their tokens and timings. Buttons: process the queue now (also during a game), retry failed items, load or free the model, pin the chat model, index everything for semantic search. Every chat call and embedding batch is recorded in `llm_calls` (kept 30 days).
 
 Every list is paged on the server (numbered pages, the page lives in the URL, so back, reload and shared links keep it), and the search box in the top bar (press `/`) works from any page. Any record opens in a side panel with its metadata; notes and tasks are edited there.
 
@@ -135,7 +136,7 @@ node "$OM" status                 # counts, LLM, mode, claude-mem detection
 node "$OM" import                 # import new claude-mem rows (safe to repeat)
 node "$OM" search nginx certs     # search from the terminal
 node "$OM" brief my-project       # rewrite a project brief now
-node "$OM" drain | sync           # process the queue / push to the server now
+node "$OM" drain [--force] | sync # process the queue (--force: even while a game runs) / push to the server now
 node "$OM" busy [--unload]        # is a game running? (exit 0 = busy)
 node "$OM" embed [--all]          # compute missing embeddings now (--all: no per-run limit)
 node "$OM" review-notes my-project  # check a project's notes for contradictions now

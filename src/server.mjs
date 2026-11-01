@@ -11,6 +11,7 @@ import { deleteItem, TASK_STATUSES } from './items.mjs';
 import { exportFileName, itemsMarkdown } from './export.mjs';
 import { ingest } from './sync.mjs';
 import { gzipSync } from 'node:zlib';
+import { ENGINE_ACTIONS, engineAction, engineStatus } from './engine.mjs';
 import { facets, feed, find, itemsPage, overview, projectDetail, projects, record, sessionDetail, sessions } from './views.mjs';
 
 const WEB = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web');
@@ -124,6 +125,7 @@ export function createServer(db, settings) {
     '/api/projects': () => projects(db),
     '/api/project': (q) => projectDetail(db, q.get('name')) ?? (() => { throw new HttpError(404, 'unknown project'); })(),
     '/api/facets': () => facets(db),
+    '/api/engine': (q) => engineStatus(db, settings, { hours: num(q.get('hours'), 24) }),
     '/api/feed': (q) => feed(db, { project: q.get('project'), kinds: q.get('kinds') || undefined, device: q.get('device'), before: num(q.get('before')), ...pageOf(q) }),
     '/api/sessions': (q) => sessions(db, { project: q.get('project'), device: q.get('device'), q: q.get('q'), ...pageOf(q) }),
     '/api/items': (q) => itemsPage(db, { kind: q.get('kind'), project: q.get('project'), status: q.get('status'), q: q.get('q'), ...pageOf(q) }),
@@ -187,6 +189,17 @@ export function createServer(db, settings) {
     if (route === '/api/ingest') {
       if (who.kind !== 'device') throw new HttpError(403, 'devices only');
       return send(res, 200, { ok: true, counts: ingest(db, who.device, await readBody(req, 64 * 1024 * 1024)) });
+    }
+    if (route.startsWith('/api/engine/')) {
+      if (who.kind !== 'admin') throw new HttpError(403, 'admin only');
+      const action = route.slice('/api/engine/'.length);
+      if (!ENGINE_ACTIONS.includes(action)) throw new HttpError(404, 'not found');
+      const body = await readBody(req, 4096);
+      try {
+        return send(res, 200, { result: await engineAction(db, settings, action, body) });
+      } catch (err) {
+        throw new HttpError(400, err.message);
+      }
     }
     if (route === '/api/items/delete') {
       if (who.kind !== 'admin') throw new HttpError(403, 'admin only');

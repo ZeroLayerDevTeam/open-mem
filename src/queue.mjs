@@ -9,6 +9,7 @@ import { isNetworkError } from './backend.mjs';
 import { listItems } from './items.mjs';
 import { busyReason } from './busy.mjs';
 import { BRIEF_SYSTEM, completeJson, NOTES_REVIEW_SYSTEM, resolveProvider, OBSERVATION_SYSTEM, SUMMARY_SYSTEM, unloadOllama } from './llm.mjs';
+import { withRecorder } from './llmstats.mjs';
 import { sessionMeta } from './meta.mjs';
 import { redact } from './redact.mjs';
 import { clip as clipLine, insertObservation, notesReview, reviewKey, promptText, sessionInfo, turnObservations, upsertSummary } from './store.mjs';
@@ -76,12 +77,20 @@ function releaseLock() {
   } catch { /* already gone */ }
 }
 
-export function spawnDrainer() {
-  if (lockHolder()) return;
-  const child = spawn(process.execPath, ['--no-warnings', CLI, 'drain'], {
-    detached: true, stdio: 'ignore', windowsHide: true, env: process.env,
-  });
+// Pid of the process draining the queue right now, or null.
+export const drainerPid = () => lockHolder();
+
+// Runs a CLI command in a detached background process.
+export function spawnCli(...args) {
+  const child = spawn(process.execPath, ['--no-warnings', CLI, ...args], { detached: true, stdio: 'ignore', windowsHide: true, env: process.env });
   child.unref();
+}
+
+// Starts a detached drainer unless one runs. Returns whether one was started.
+export function spawnDrainer(extraArgs = []) {
+  if (lockHolder()) return false;
+  spawnCli('drain', ...extraArgs);
+  return true;
 }
 
 // --- processing ----------------------------------------------------------
@@ -281,12 +290,13 @@ async function upkeep(db, touched, provider, settings, checkBusy) {
 }
 
 // Processes the queue until empty. Returns number of items handled.
-export async function drain(db, settings, { lock = true, provider: forced, sync = true, busy: isBusy = busyReason } = {}) {
+// `force`: process even while a game runs (asked for from the web viewer).
+export async function drain(db, settings, { lock = true, provider: forced, sync = true, busy: isBusy = busyReason, force = false } = {}) {
   if (lock && !acquireLock()) return 0;
   let handled = 0;
   const touched = new Set();
   try {
-    const provider = forced || await resolveProvider(settings);
+    const provider = withRecorder(db, forced || await resolveProvider(settings));
     if (provider.kind !== 'none') setMeta(db, 'llm_seen_at', Date.now());
     // An LLM that worked before and is unreachable now is treated as temporarily down: items wait for
     // it (up to llmWaitHours) instead of going through the lossy no-LLM path.
@@ -298,7 +308,7 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
     } else if (provider.kind === 'none' && provider.reason) log('info', `drain without LLM: ${provider.reason}`);
     // A local LLM competes with games for the GPU: while one runs, nothing is sent to it.
     // Hooks start a drainer on every tool call: a recent "busy" answer is reused instead of listing processes again.
-    const checkBusy = provider.kind !== 'ollama' ? async () => null : async () => {
+    const checkBusy = provider.kind !== 'ollama' || force ? async () => null : async () => {
       const seen = Number(getMeta(db, 'busy_seen_at') || 0);
       if (Date.now() - seen < BUSY_RECHECK_MS) return getMeta(db, 'busy_reason');
       const reason = await isBusy(settings);

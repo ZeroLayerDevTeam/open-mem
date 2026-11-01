@@ -9,6 +9,7 @@ import { claudeMemDbPath, installedPluginIds, importClaudeMem, uninstallClaudeMe
 import { busyReason } from './busy.mjs';
 import { resolveProvider, unloadOllama } from './llm.mjs';
 import { drain, generateBrief, reviewNotes } from './queue.mjs';
+import { withRecorder } from './llmstats.mjs';
 import { call } from './backend.mjs';
 import { exportFileName, itemsMarkdown } from './export.mjs';
 import { serve } from './server.mjs';
@@ -21,7 +22,7 @@ Usage: node cli.mjs <command> [options]
 
   status                         Database counts, LLM provider, mode, claude-mem detection
   import [--quiet]               Import new rows from claude-mem (read-only, incremental)
-  drain                          Process the pending queue now
+  drain [--force]                Process the pending queue now (--force: even while a game runs)
   busy [--unload]                Is a game running? (exit 0 = busy) --unload frees the Ollama models then
   search <query> [--project P]   Search memory from the terminal
   redact                         Re-scan stored memory and redact secrets
@@ -112,7 +113,7 @@ async function main() {
     } else if (cmd === 'redact') {
       console.log(`redacted ${redactExisting(db)} rows`);
     } else if (cmd === 'drain') {
-      const n = await drain(db, settings);
+      const n = await drain(db, settings, { force: flag(args, '--force') });
       log('info', `drain handled ${n} items`);
     } else if (cmd === 'busy') {
       const reason = await busyReason(settings);
@@ -126,11 +127,11 @@ async function main() {
       const project = option(args, '--project');
       console.log(formatIndex(await hybridSearch(db, { query: args.join(' '), project, limit: 30 }, settings)));
     } else if (cmd === 'brief') {
-      const provider = await resolveProvider(settings);
+      const provider = withRecorder(db, await resolveProvider(settings));
       if (provider.kind === 'none') throw new Error(`no LLM available: ${provider.reason}`);
       console.log((await generateBrief(db, args.join(' '), provider, settings)) ? 'brief updated' : 'no summaries for that project');
     } else if (cmd === 'review-notes') {
-      const provider = await resolveProvider(settings);
+      const provider = withRecorder(db, await resolveProvider(settings));
       if (provider.kind === 'none') throw new Error(`no LLM available: ${provider.reason}`);
       const flags = await reviewNotes(db, args.join(' '), provider, settings);
       console.log(flags.length ? flags.map((f) => `${f.ids.join(', ')} ${f.kind}: ${f.reason}`).join('\n') : 'nothing to fix');

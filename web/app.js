@@ -770,12 +770,253 @@ const searchPage = {
   },
 };
 
+// --- local LLM ----------------------------------------------------------------------------------------------------
+const RANGES = [[24, '24 hours'], [168, '7 days'], [720, '30 days']];
+const TASK_LABELS = { observation: 'Tool calls', summary: 'Turn summaries', brief: 'Project briefs', review: 'Notes reviews', embed: 'Embeddings', other: 'Other' };
+const gb = (bytes) => `${(Number(bytes || 0) / 1e9).toLocaleString(document.documentElement.lang, { maximumFractionDigits: 1 })} GB`;
+const num1 = (n) => Number(n).toLocaleString(document.documentElement.lang, { maximumFractionDigits: 1 });
+const ms = (n) => (n == null ? '-' : n < 1000 ? `${Math.round(n)} ms` : `${num1(n / 1000)} s`);
+const until = (left) => (left < 90000
+  ? new Intl.RelativeTimeFormat(document.documentElement.lang, { numeric: 'auto', style: 'short' }).format(Math.max(0, Math.round(left / 1000)), 'second')
+  : ago(Date.now() + left));
+const level = (ratio) => (ratio >= 0.95 ? 'danger' : ratio >= 0.85 ? 'warn' : '');
+// `warn`: the fill turns amber, then red, near full (memory in use); off where full is good (share on the GPU).
+const meter = (ratio, label, warn = true) => html`<div class="meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(ratio * 100)}" aria-label="${label}"
+  ${warn && level(ratio) ? raw(`data-level="${level(ratio)}"`) : ''}><span style="width:${Math.min(100, Math.max(0, ratio * 100)).toFixed(1)}%"></span></div>`;
+
+// Round ticks for an axis from 0 to at least `max`.
+function niceTicks(max, count = 3) {
+  if (!(max > 0)) return [0, 1];
+  const raw = max / count;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].find((m) => m * mag >= raw) * mag;
+  return Array.from({ length: Math.ceil(max / step) + 1 }, (_, i) => i * step);
+}
+
+function bucketLabel(at, hours) {
+  const d = new Date(at);
+  const loc = document.documentElement.lang;
+  return hours <= 24 ? timeOf(at) : d.toLocaleDateString(loc, hours <= 168 ? { weekday: 'short', day: 'numeric' } : { day: 'numeric', month: 'short' });
+}
+
+// Columns over time. `stack(b)` returns the segments of one column from the baseline up: [{ v, cls }].
+function columnChart({ title, legend = '', buckets, hours, stack, tip, fmtTick = fmt, empty }) {
+  const totals = buckets.map((b) => stack(b).reduce((n, s) => n + (s.v || 0), 0));
+  const ticks = niceTicks(Math.max(0, ...totals));
+  const top = ticks.at(-1);
+  const every = Math.ceil(buckets.length / 6);
+  const n = buckets.length;
+  return html`<figure class="chart"><div class="chart-head"><h3>${title}</h3>${legend}</div>
+    <div class="chart-plot">
+      <div class="chart-grid" aria-hidden="true">${ticks.map((v) => html`<span style="bottom:${(v / top) * 100}%"><i>${fmtTick(v)}</i></span>`)}</div>
+      <div class="chart-cols" style="--n:${n}">${buckets.map((b) => html`<div tabindex="0" data-tip="${tip(b)}">${stack(b).filter((s) => s.v > 0)
+        .map((s) => html`<i class="${s.cls}" style="height:max(2px, calc(${(s.v / top) * 100}% - 2px))"></i>`)}</div>`)}</div>
+      ${totals.some((v) => v > 0) ? '' : html`<p class="chart-empty">${empty}</p>`}
+    </div>
+    <div class="chart-x" aria-hidden="true">${buckets.map((b, i) => (i % every === 0 ? html`<span style="left:${((i + 0.5) / n) * 100}%">${bucketLabel(b.at, hours)}</span>` : ''))}</div></figure>`;
+}
+
+// One floating tooltip for every chart column (pointer and keyboard).
+const tipEl = Object.assign(document.createElement('div'), { className: 'chart-tip', hidden: true });
+document.body.append(tipEl);
+function placeTip(x, y) {
+  const w = tipEl.offsetWidth;
+  const h = tipEl.offsetHeight;
+  tipEl.style.left = `${Math.min(innerWidth - w - 8, Math.max(8, x + 14))}px`;
+  tipEl.style.top = `${y - h - 12 < 8 ? y + 18 : y - h - 12}px`;
+}
+document.addEventListener('pointermove', (e) => {
+  const el = e.target.closest?.('[data-tip]');
+  if (!el) { tipEl.hidden = true; return; }
+  tipEl.textContent = el.dataset.tip;
+  tipEl.hidden = false;
+  placeTip(e.clientX, e.clientY);
+});
+document.addEventListener('focusin', (e) => {
+  const el = e.target.closest?.('[data-tip]');
+  if (!el) { tipEl.hidden = true; return; }
+  const r = el.getBoundingClientRect();
+  tipEl.textContent = el.dataset.tip;
+  tipEl.hidden = false;
+  placeTip(r.left + r.width / 2, r.top);
+});
+document.addEventListener('scroll', () => { tipEl.hidden = true; }, { passive: true });
+
+function llmState(s) {
+  const waiting = s.queue.counts.filter((c) => c.status !== 'failed').reduce((n, c) => n + c.n, 0);
+  if (s.waitingForLlm) return ['down', t('Not answering'), t('{n} items wait for it', { n: fmt(waiting) })];
+  if (s.provider.kind === 'none') return ['off', t('No LLM'), s.provider.reason ? clip(s.provider.reason, 90) : ''];
+  if (s.busy) return ['paused', t('Paused for a game'), clip(String(s.busy).split(/[\\/]/).pop(), 60)];
+  if (s.drainer) return ['work', t('Working'), t('processing the queue')];
+  return ['ready', t('Ready'), waiting ? t('{n} items waiting', { n: fmt(waiting) }) : t('queue empty')];
+}
+
+const llmPage = {
+  timer: null,
+  hours: 24,
+  async render(ctx) {
+    view.innerHTML = html`${head(t('Local LLM'), t('The model that turns tool calls into memory: what it is doing, how fast, and what is waiting. Nothing here uses your Claude plan.'),
+      html`<p class="updated" id="llm-updated"></p>`)}<div id="llm">${skeleton(8)}</div>`;
+    view.onclick = (e) => this.act(e);
+    view.onchange = (e) => { if (e.target.id === 'pin-model') this.post('model', { model: e.target.value }); };
+    clearInterval(this.timer);
+    this.timer = setInterval(() => this.poll(), 5000);
+    await this.update(ctx);
+  },
+  async update({ params, signal }) {
+    this.hours = Number(params.get('hours')) || 24;
+    await this.load(signal);
+  },
+  leave() { clearInterval(this.timer); this.timer = null; view.onclick = null; view.onchange = null; },
+  // Live while the tab is visible; skipped while a menu of the page is in use or the record panel is open.
+  poll() {
+    if (!$('#llm')) { this.leave(); return; }
+    if ($('#app').hidden || document.visibilityState !== 'visible' || drawer.open || document.activeElement?.closest?.('#llm select')) return;
+    this.load().catch(() => {});
+  },
+  async load(signal) {
+    const s = await api(`/api/engine?${qs({ hours: this.hours })}`, { signal });
+    const open = new Set($$('#llm details[open]').map((d) => d.dataset.key));
+    $('#llm').innerHTML = this.draw(s).s;
+    for (const d of $$('#llm details[data-key]')) if (open.has(d.dataset.key)) d.open = true;
+    $('#llm-updated').textContent = t('Updated {time}', { time: new Date(s.now).toLocaleTimeString(document.documentElement.lang) });
+  },
+  async post(action, body = {}) {
+    try {
+      const { result } = await api(`/api/engine/${action}`, { body });
+      const msg = {
+        drain: () => (result.started ? t('Processing the queue') : t('Already processing')),
+        retry: () => t('{n} items queued again', { n: result.retried }),
+        unload: () => (result.unloaded.length ? t('Freed {models}', { models: result.unloaded.join(', ') }) : t('Nothing was loaded')),
+        load: () => t('{model} loaded in {time}', { model: result.loaded, time: ms(result.ms) }),
+        model: () => (result.model ? t('Chat model: {model}', { model: result.model }) : t('Chat model: automatic')),
+        embed: () => t('Embedding every record in the background'),
+      }[action];
+      toast(msg());
+    } catch (err) { toast(err.message); }
+    this.load().catch(() => {});
+  },
+  async act(e) {
+    const btn = e.target.closest('[data-action]');
+    if (btn) {
+      btn.disabled = true;
+      await this.post(btn.dataset.action, btn.dataset.force ? { force: true } : {});
+      return;
+    }
+    const range = e.target.closest('[data-hours]');
+    if (range) setParams({ hours: range.dataset.hours === '24' ? '' : range.dataset.hours });
+  },
+  draw(s) {
+    const [state, stateLabel, stateSub] = llmState(s);
+    const st = s.stats;
+    const o = s.ollama;
+    const count = (kind, status) => s.queue.counts.filter((c) => (!kind || c.kind === kind) && c.status === status).reduce((n, c) => n + c.n, 0);
+    const waiting = count(null, 'pending') + count(null, 'processing');
+    const failed = count(null, 'failed');
+    const oldest = Math.min(...s.queue.counts.filter((c) => c.status !== 'failed').map((c) => c.oldest));
+    const rangeName = t(RANGES.find(([h]) => h === st.hours)?.[1] || '24 hours');
+    const local = s.provider.setting === 'auto' || s.provider.setting === 'ollama';
+    const chatModels = o?.up ? o.installed.filter((m) => m.chat) : [];
+
+    const status = html`<section class="kpis" aria-label="${t('Summary')}">
+      <div class="kpi"><span class="state" data-s="${state}">${stateLabel}</span><small>${stateSub}</small></div>
+      ${stat(st.chat.speed ? html`${num1(st.chat.speed)} <small>tok/s</small>` : '-', t('generation speed, {range}', { range: rangeName }))}
+      ${stat(ms(st.chat.p50), st.chat.p95 ? t('median call, p95 {time}', { time: ms(st.chat.p95) }) : t('median call'))}
+      ${stat(fmt(st.chat.calls), st.chat.failed ? t('calls, {n} failed', { n: fmt(st.chat.failed) }) : t('calls, {range}', { range: rangeName }))}
+      ${stat(fmt(waiting), waiting ? t('in the queue, oldest {when}', { when: ago(oldest) }) : t('in the queue'))}
+    </section>`;
+
+    const loaded = !local ? emptyPanel(t('Provider {provider} at {url}: memory and GPU are not visible from here.', { provider: s.provider.kind, url: s.provider.endpoint || '-' }))
+      : !o?.up ? html`<div class="empty"><strong>${t('Ollama is not answering at {url}.', { url: o?.url || '' })}</strong>${t('Start Ollama; queued items wait for it.')}</div>`
+        : html`${o.loaded.length ? o.loaded.map((m) => html`<div class="res"><div class="res-head"><b>${m.name}</b><span>${[m.params, m.quant].filter(Boolean).join(' ')}</span></div>
+            ${meter(m.size ? (m.vram || 0) / m.size : 0, t('Share on the GPU'), false)}
+            <div class="minis"><span>${t('Uses')} <b>${gb(m.size)}</b></span><span><b>${m.size ? Math.round(((m.vram || 0) / m.size) * 100) : 0}%</b> ${t('on the GPU')}</span>
+              ${m.context ? html`<span>${t('context')} <b>${fmt(m.context)}</b></span>` : ''}
+              <span>${s.drainer || (m.expiresAt && m.expiresAt - s.now < 2000) ? html`<b>${t('in use now')}</b>`
+                : m.expiresAt && m.expiresAt - s.now < 365 * 864e5 ? html`${t('frees memory')} <b>${until(m.expiresAt - s.now)}</b>` : t('stays loaded')}</span></div></div>`)
+          : emptyPanel(t('No model in memory. Ollama loads {model} on the next call and frees it {keep} after the last one.', { model: s.provider.model || '-', keep: s.provider.keepAlive || '5m' }))}
+          <div class="btns">${s.provider.model ? html`<button class="btn" type="button" data-action="load">${t('Load {model}', { model: s.provider.model })}</button>` : ''}
+            ${o.loaded.length ? html`<button class="btn ghost" type="button" data-action="unload">${t('Free the memory')}</button>` : ''}</div>`;
+
+    const gpus = s.gpus?.length ? s.gpus.map((g) => {
+      const ratio = g.memTotalMb ? g.memUsedMb / g.memTotalMb : 0;
+      return html`<div class="res"><div class="res-head"><b>${g.name}</b><span>${num1(g.memUsedMb / 1024)} / ${num1(g.memTotalMb / 1024)} GB</span></div>
+        ${meter(ratio, t('Video memory in use'))}
+        <div class="minis">${g.util != null ? html`<span>${t('load')} <b>${g.util}%</b></span>` : ''}${g.temp != null ? html`<span>${t('temperature')} <b>${g.temp} °C</b></span>` : ''}
+          ${g.powerW != null ? html`<span>${t('power')} <b>${Math.round(g.powerW)} W</b></span>` : ''}</div></div>`;
+    }) : emptyPanel(t('No NVIDIA GPU found (nvidia-smi is not available).'));
+
+    const legend = html`<div class="legend"><span><i class="sw-1"></i>${t('Done')}</span><span><i class="sw-crit"></i>${t('Failed')}</span></div>`;
+    const span = (b) => `${bucketLabel(b.at, st.hours)}${st.hours <= 24 ? ` - ${timeOf(b.at + st.bucketMs)}` : ''}`;
+    const charts = html`<div class="charts">
+      ${columnChart({ title: t('Generation speed (tokens per second)'), buckets: st.buckets, hours: st.hours, fmtTick: (v) => fmt(v),
+        stack: (b) => [{ v: b.speed || 0, cls: 'sw-1' }], empty: t('No calls in this period.'),
+        tip: (b) => (b.calls ? `${span(b)}\n${num1(b.speed || 0)} tok/s, ${t('{n} calls', { n: b.calls })}, ${t('average {time}', { time: ms(b.avgMs) })}` : `${span(b)}\n${t('No calls')}`) })}
+      ${columnChart({ title: t('Calls'), legend, buckets: st.buckets, hours: st.hours, empty: t('No calls in this period.'),
+        stack: (b) => [{ v: b.calls - b.failed, cls: 'sw-1' }, { v: b.failed, cls: 'sw-crit' }],
+        tip: (b) => `${span(b)}\n${t('{n} calls', { n: b.calls })}${b.failed ? `, ${t('{n} failed', { n: b.failed })}` : ''}` })}
+    </div>
+    <details class="as-table" data-key="tasks"><summary>${t('By task')}</summary><div class="scroll-x"><table class="data">
+      <thead><tr><th>${t('Task')}</th><th class="n">${t('Calls')}</th><th class="n">${t('Failed')}</th><th class="n">${t('Tokens in')}</th><th class="n">${t('Tokens out')}</th><th class="n">tok/s</th><th class="n">${t('Average')}</th></tr></thead>
+      <tbody>${st.tasks.length ? st.tasks.map((r) => html`<tr><td>${t(TASK_LABELS[r.task] || r.task)}</td><td class="n">${fmt(r.calls)}</td><td class="n">${fmt(r.calls - r.ok)}</td>
+        <td class="n">${fmt(r.prompt_tokens)}</td><td class="n">${r.task === 'embed' ? '-' : fmt(r.output_tokens)}</td><td class="n">${r.speed ? num1(r.speed) : '-'}</td><td class="n">${ms(r.total_ms / r.calls)}</td></tr>`)
+        : html`<tr><td colspan="7" class="muted">${t('No calls in this period.')}</td></tr>`}</tbody></table></div></details>
+    <details class="as-table" data-key="buckets"><summary>${t('Show the charts as a table')}</summary><div class="scroll-x"><table class="data">
+      <thead><tr><th>${t('Period')}</th><th class="n">${t('Calls')}</th><th class="n">${t('Failed')}</th><th class="n">tok/s</th><th class="n">${t('Average')}</th></tr></thead>
+      <tbody>${st.buckets.filter((b) => b.calls).reverse().map((b) => html`<tr><td>${span(b)}</td><td class="n">${fmt(b.calls)}</td><td class="n">${fmt(b.failed)}</td><td class="n">${b.speed ? num1(b.speed) : '-'}</td><td class="n">${ms(b.avgMs)}</td></tr>`)}</tbody></table></div></details>`;
+
+    const queueRow = (q) => html`<li><div class="lead"><span class="tag">${q.kind === 'summary' ? t('Turn summary') : q.tool || t('Tool calls')}</span>${q.status === 'processing' ? statusChip('doing') : ''}
+      <span>${ago(q.created_at)}</span>${q.attempts ? html`<span>${t('attempt {n}', { n: q.attempts })}</span>` : ''}</div>
+      <span class="title mono">${q.kind === 'summary' ? t('Prompt #{n}', { n: q.prompt_number ?? '?' }) : clip(q.what || q.tool || '-', 140)}</span>
+      ${meta(metaItems({ project: q.project }))}${q.error ? html`<p class="snippet err">${clip(q.error, 220)}</p>` : ''}</li>`;
+    const queue = html`<div class="minis"><span>${t('Tool calls')} <b>${fmt(count('observation', 'pending') + count('observation', 'processing'))}</b></span>
+        <span>${t('Turn summaries')} <b>${fmt(count('summary', 'pending') + count('summary', 'processing'))}</b></span><span>${t('Failed')} <b>${fmt(failed)}</b></span></div>
+      <div class="btns"><button class="btn primary" type="button" data-action="drain" ${s.drainer ? raw('disabled') : ''}>${s.drainer ? t('Processing…') : t('Process the queue now')}</button>
+        ${s.provider.pauseWhenBusy && s.provider.kind === 'ollama' ? html`<button class="btn" type="button" data-action="drain" data-force="1" ${s.drainer ? raw('disabled') : ''}>${t('Process now, even during a game')}</button>` : ''}
+        ${failed ? html`<button class="btn" type="button" data-action="retry">${t('Retry {n} failed', { n: fmt(failed) })}</button>` : ''}</div>
+      ${s.queue.next.length ? html`<h3 class="sub-h">${t('Next in line')}</h3><ul class="list compact">${s.queue.next.map(queueRow)}</ul>` : html`<p class="foot-note">${t('Nothing waiting: every tool call is already in memory.')}</p>`}
+      ${s.queue.failed.length ? html`<details class="as-table" data-key="failed"><summary>${t('Failed items ({n})', { n: fmt(failed) })}</summary><ul class="list compact">${s.queue.failed.map(queueRow)}</ul></details>` : ''}`;
+
+    const models = !local ? emptyPanel(t('Models are chosen in the provider settings.'))
+      : !o?.up ? emptyPanel(t('Ollama is not answering.'))
+        : html`<label class="field-label" for="pin-model">${t('Chat model')}</label>
+          <select id="pin-model">${option('', t('Automatic ({model})', { model: s.provider.pinned ? '-' : s.provider.model || '-' }), !s.provider.pinned)}${chatModels.map((m) => option(m.name, m.name, m.name === s.provider.pinned))}</select>
+          ${o.installed.length ? html`<ul class="kv gap-top">${o.installed.map((m) => html`<li><span class="k">${m.name}
+            ${m.name === s.provider.model ? html` <span class="tag" data-type="summary">${t('in use')}</span>` : ''}${m.name.split(':')[0] === String(s.embeddings.model).split(':')[0] ? html` <span class="tag" data-type="note">${t('search')}</span>` : ''}</span>
+            <span class="v">${[m.params, m.quant, gb(m.size)].filter(Boolean).join(' · ')}</span></li>`)}</ul>`
+            : emptyPanel(tr('No models installed. Run <code>ollama pull gemma3:12b</code> (or gemma3:4b on a small GPU) and <code>ollama pull embeddinggemma</code>.'))}
+          <p class="foot-note">${t('Ollama {version} at {url}.', { version: o.version || '?', url: o.url })}</p>`;
+
+    const e = s.embeddings;
+    const total = e.enabled ? e.done + e.pending : 0;
+    const index = !e.enabled ? emptyPanel(t('Semantic search is off: search is full-text only.'))
+      : html`${meter(total ? e.done / total : 0, t('Records searchable by meaning'), false)}
+        <p class="foot-note">${t('{done} of {total} records searchable by meaning ({model}).', { done: fmt(e.done), total: fmt(total), model: e.model })}</p>
+        ${e.pending ? html`<div class="btns"><button class="btn" type="button" data-action="embed">${t('Index everything now')}</button></div>` : ''}`;
+
+    const recent = st.recent.length ? html`<div class="scroll-x"><table class="data">
+      <thead><tr><th>${t('When')}</th><th>${t('Task')}</th><th>${t('Model')}</th><th class="n">${t('Tokens in')}</th><th class="n">${t('Tokens out')}</th><th class="n">tok/s</th><th class="n">${t('Load')}</th><th class="n">${t('Total')}</th><th>${t('Result')}</th></tr></thead>
+      <tbody>${st.recent.map((c) => html`<tr><td>${timeOf(c.at)} <span class="muted">${ago(c.at)}</span></td><td>${t(TASK_LABELS[c.task] || c.task)}${c.items ? ` (${c.items})` : ''}</td><td>${c.model || '-'}</td>
+        <td class="n">${c.prompt_tokens != null ? fmt(c.prompt_tokens) : '-'}</td><td class="n">${c.output_tokens != null && c.task !== 'embed' ? fmt(c.output_tokens) : '-'}</td>
+        <td class="n">${c.output_tokens && c.eval_ms ? num1(c.output_tokens / (c.eval_ms / 1000)) : '-'}</td><td class="n">${c.load_ms > 50 ? ms(c.load_ms) : '-'}</td><td class="n">${ms(c.total_ms)}</td>
+        <td>${c.ok ? statusChip('done') : html`<span class="err" title="${c.error || ''}">${clip(c.error || t('Failed'), 60)}</span>`}</td></tr>`)}</tbody></table></div>`
+      : emptyPanel(t('No calls recorded yet. They appear here as soon as the queue is processed with an LLM.'));
+
+    const panel = (title, aside, body) => html`<section class="panel"><header class="panel-head"><h2>${title}</h2>${aside || ''}</header>${body}</section>`;
+    return html`${status}
+      <div class="cols">${panel(t('In memory'), o?.up ? html`<span class="muted">${t('{n} loaded', { n: o.loaded.length })}</span>` : '', loaded)}${panel(t('GPU'), '', gpus)}</div>
+      ${panel(t('Speed and calls'), html`<div class="seg" role="group" aria-label="${t('Period')}">${RANGES.map(([h, l]) => html`<button type="button" data-hours="${h}" aria-pressed="${h === st.hours}">${t(l)}</button>`)}</div>`, charts)}
+      <div class="cols">${panel(t('Queue'), s.drainer ? html`<span class="state" data-s="work">${t('Working')}</span>` : '', queue)}<div class="stack">${panel(t('Models'), '', models)}${panel(t('Semantic search index'), '', index)}</div></div>
+      ${panel(t('Latest calls'), '', recent)}`;
+  },
+};
+
 // --- router ---------------------------------------------------------------------------------------------------------
 const ROUTES = {
   overview: overviewPage, projects: projectsPage, project: projectPage, timeline: timelinePage, sessions: sessionsPage, session: sessionPage,
-  tasks: tasksPage, notes: notesPage, search: searchPage,
+  tasks: tasksPage, notes: notesPage, search: searchPage, llm: llmPage,
 };
-const TITLES = { overview: 'Progress', projects: 'Projects', project: 'Projects', timeline: 'Timeline', tasks: 'Tasks', notes: 'Notes', search: 'Search', sessions: 'Sessions', session: 'Sessions' };
+const TITLES = { overview: 'Progress', projects: 'Projects', project: 'Projects', timeline: 'Timeline', tasks: 'Tasks', notes: 'Notes', search: 'Search', sessions: 'Sessions', session: 'Sessions', llm: 'Local LLM' };
 const NAV = { project: 'projects', session: 'sessions' };
 let current = null;
 let controller = null;
@@ -803,6 +1044,7 @@ async function route() {
   try {
     if (update) await page.update(ctx);
     else {
+      if (current && current.name !== name) ROUTES[current.name].leave?.();
       view.innerHTML = skeleton(10).s;
       await page.render(ctx);
       view.focus({ preventScroll: true });

@@ -2,7 +2,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { dataPath, ensureDataDir } from './config.mjs';
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -225,6 +225,28 @@ CREATE INDEX IF NOT EXISTS sum_time ON summaries (created_at);
 CREATE INDEX IF NOT EXISTS obs_device ON observations (device, created_at);
 `;
 
+// v5: one row per LLM call (chat or embedding batch) for the web viewer's LLM page: speed, latency, failures.
+// Times in ms, token counts as the provider reports them. Rows older than 30 days are pruned.
+const SCHEMA_V5 = `
+CREATE TABLE IF NOT EXISTS llm_calls (
+  id INTEGER PRIMARY KEY,
+  at INTEGER NOT NULL,
+  task TEXT NOT NULL,
+  provider TEXT,
+  model TEXT,
+  ok INTEGER NOT NULL,
+  items INTEGER,
+  prompt_tokens INTEGER,
+  output_tokens INTEGER,
+  load_ms REAL,
+  prompt_ms REAL,
+  eval_ms REAL,
+  total_ms REAL,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS llm_calls_at ON llm_calls (at);
+`;
+
 // Reconstruction metadata added to every captured record in v2.
 const V2_COLUMNS = {
   sessions: ['device TEXT', 'git_branch TEXT', 'git_commit TEXT', 'injected TEXT', 'last_seen_at INTEGER'],
@@ -256,6 +278,7 @@ function migrate(db) {
     db.exec('CREATE INDEX IF NOT EXISTS sum_unsynced ON summaries (id) WHERE synced_at IS NULL');
     db.exec('CREATE INDEX IF NOT EXISTS prompts_unsynced ON prompts (id) WHERE synced_at IS NULL');
     db.exec(SCHEMA_V4);
+    db.exec(SCHEMA_V5);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     db.exec('COMMIT');
   } catch (err) {
