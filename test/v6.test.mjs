@@ -9,10 +9,10 @@ import { test } from 'node:test';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'open-mem-v6-'));
 process.env.CLAUDE_OPEN_MEM_DATA_DIR = path.join(TMP, 'data');
 
-const { DEFAULT_SETTINGS } = await import('../src/config.mjs');
+const { DEFAULT_SETTINGS, dataPath } = await import('../src/config.mjs');
 const { backupDb, openDb } = await import('../src/db.mjs');
 const store = await import('../src/store.mjs');
-const { findLessons } = await import('../src/queue.mjs');
+const { drain, findLessons, projectsForLessons } = await import('../src/queue.mjs');
 
 test('backup: consistent copy while another connection holds a write transaction open', () => {
   const file = path.join(TMP, 'live.db');
@@ -76,4 +76,35 @@ test('lessons: only mistakes fixed in two different sessions, known ids only', a
     assert.deepEqual(found, [{ ids: [String(x), String(y)], rule: 'Run ssh from PowerShell, not Git Bash.' }]);
     assert.deepEqual(store.lessons(db, 'P').lessons, found);
   } finally { server.close(); db.close(); }
+});
+
+test('lessons: a project with fixes from a single session never reaches the LLM', () => {
+  const db = openDb(path.join(TMP, 'lessons-scope.db'));
+  const now = Date.now();
+  for (let i = 0; i < 4; i++) {
+    store.insertObservation(db, { project: 'solo', session_id: 'one', type: 'bugfix', title: `solo fix ${i}`, created_at: now - i });
+    store.insertObservation(db, { project: 'many', session_id: `s${i % 2}`, type: 'bugfix', title: `many fix ${i}`, created_at: now - i });
+  }
+  assert.deepEqual(projectsForLessons(db), ['many']);
+  db.close();
+});
+
+test('drain: a second run in the same process (a slow serve tick) keeps out and leaves the lock alone', async () => {
+  const db = openDb(path.join(TMP, 'overlap.db'));
+  const settings = { ...DEFAULT_SETTINGS, mode: 'remote', serverUrl: 'http://127.0.0.1:1' };
+  let open;
+  const gate = new Promise((r) => { open = r; });
+  let pushes = 0;
+  const options = { provider: { kind: 'none' }, push: () => (++pushes === 1 ? gate : undefined) };
+  const first = drain(db, settings, options);
+  while (!pushes) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(await drain(db, settings, options), 0);
+  assert.equal(pushes, 1);
+  assert.equal(fs.readFileSync(dataPath('drain.lock'), 'utf8'), String(process.pid));
+  open();
+  await first;
+  assert.equal(fs.existsSync(dataPath('drain.lock')), false);
+  await drain(db, settings, options); // free again once the first run is over
+  assert.equal(pushes, 2);
+  db.close();
 });
