@@ -58,11 +58,16 @@ function lockHolder() {
   }
 }
 
+// `serve` drains inside its own process: a tick that outlasts serveDrainMinutes must not see its own pid as a stale lock.
+let lockHeld = false;
+
 function acquireLock() {
+  if (lockHeld) return false;
   const file = dataPath('drain.lock');
   for (let i = 0; i < 2; i++) {
     try {
       fs.writeFileSync(file, String(process.pid), { flag: 'wx' });
+      lockHeld = true;
       return true;
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
@@ -74,6 +79,7 @@ function acquireLock() {
 }
 
 function releaseLock() {
+  lockHeld = false;
   try {
     if (Number(fs.readFileSync(dataPath('drain.lock'), 'utf8')) === process.pid) fs.rmSync(dataPath('drain.lock'));
   } catch { /* already gone */ }
@@ -269,11 +275,12 @@ export async function reviewNotes(db, project, provider, settings) {
 // --- repeated mistakes ---------------------------------------------------------------------------------
 const LESSONS_WINDOW_MS = 90 * 86400000;
 
-// Projects with new bug fixes since their last lessons run (at most once a day each).
-function projectsForLessons(db) {
+// Projects with new bug fixes since their last lessons run (at most once a day each). A lesson needs two sessions, so
+// a project with fixes from only one is skipped: the model would run for nothing.
+export function projectsForLessons(db) {
   const since = Date.now() - LESSONS_WINDOW_MS;
   return db.prepare(`SELECT project, count(*) n, max(created_at) last FROM observations WHERE type = 'bugfix' AND created_at >= ?
-    AND project IS NOT NULL GROUP BY project COLLATE NOCASE HAVING n >= 4`).all(since)
+    AND project IS NOT NULL GROUP BY project COLLATE NOCASE HAVING n >= 4 AND count(DISTINCT session_id) >= 2`).all(since)
     .filter((p) => { const l = lessons(db, p.project); return !l || (p.last > l.at && Date.now() - l.at >= 86400000); })
     .map((p) => p.project);
 }
