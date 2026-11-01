@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.6
 
 - A client of a shared server pushes every 2 minutes while its queue drains. It only pushed when the queue emptied, so with several sessions keeping the queue full new records never reached the server.
 - `llmKeepAlive` defaults to `10m` (was `30s`): the model stays on the GPU between drains instead of being reloaded for each one, which made every drain wait for the load. `pauseWhenBusy` and the GPU guard still unload it when a game starts.
