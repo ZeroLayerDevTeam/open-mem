@@ -87,6 +87,43 @@ export function markInjected(db, sessionId, refs) {
   db.prepare('UPDATE sessions SET injected = ? WHERE session_id = ?').run(JSON.stringify(all), sessionId);
 }
 
+// --- recall usefulness ------------------------------------------------------
+// Paths compared case- and slash-insensitively, stored as "|a|b|" so one instr() finds a file.
+const normPath = (f) => String(f || '').replace(/\\/g, '/').toLowerCase();
+
+export function logRecall(db, sessionId, rows) {
+  const ins = db.prepare('INSERT OR IGNORE INTO recall_log (session_id, ref, files, shown_at) VALUES (?, ?, ?, ?)');
+  for (const r of rows) {
+    const files = (r.files || []).map(normPath).filter(Boolean);
+    ins.run(sessionId, refId(r), files.length ? `|${files.join('|')}|` : null, Date.now());
+  }
+}
+
+// The session used what recall showed it: fetched records (refs) or a tool touched one of their files.
+export function markRecallUsed(db, sessionId, { refs = [], file } = {}) {
+  const upd = db.prepare('UPDATE recall_log SET used = 1 WHERE session_id = ? AND ref = ? AND used = 0');
+  for (const ref of refs) upd.run(sessionId, String(ref).trim().toUpperCase());
+  if (file) {
+    db.prepare("UPDATE recall_log SET used = 1 WHERE session_id = ? AND used = 0 AND instr(files, ?) > 0")
+      .run(sessionId, `|${normPath(file)}|`);
+  }
+}
+
+// Records recall showed in at least `minShown` sessions without any of them using it: noise, not recalled again.
+export function mutedRefs(db, minShown) {
+  if (!minShown) return [];
+  return db.prepare('SELECT ref FROM recall_log GROUP BY ref HAVING count(*) >= ? AND max(used) = 0').all(minShown).map((r) => r.ref);
+}
+
+export function recallStats(db, minShown) {
+  const t = db.prepare('SELECT count(*) shown, coalesce(sum(used), 0) used, count(DISTINCT session_id) sessions FROM recall_log').get();
+  return { ...t, muted: mutedRefs(db, minShown).length };
+}
+
+export function pruneRecallLog(db, days = 90) {
+  return Number(db.prepare('DELETE FROM recall_log WHERE shown_at < ?').run(Date.now() - days * 86400000).changes);
+}
+
 // --- search ---------------------------------------------------------------
 // "foo bar-baz" -> "foo"* "bar"* "baz"*  (AND) or joined with OR.
 export function ftsTerms(query) {
@@ -232,7 +269,13 @@ export function recall(db, { prompt, project, exclude = new Set(), limit = 5 }) 
   const strong = scored.filter((r) => r.hits >= need);
   const pool = strong.length ? strong : scored.filter((r) => r.rank < -8);
   pool.sort((a, b) => b.hits - a.hits || a.rank - b.rank);
-  return pool.slice(0, limit);
+  // Files of each record, so the client can tell later whether the session worked on them (recall usefulness).
+  return pool.slice(0, limit).map((r) => {
+    if (r.kind === 'item') return r;
+    const f = db.prepare(`SELECT files_read, files_modified FROM ${TABLES[r.kind].table} WHERE id = ?`).get(r.id) || {};
+    const files = [f.files_read, f.files_modified].flatMap((x) => { try { return JSON.parse(x || '[]'); } catch { return []; } });
+    return { ...r, files: [...new Set(files)].slice(0, 20) };
+  });
 }
 
 // --- refs -------------------------------------------------------------------
@@ -407,6 +450,12 @@ function hotFiles(db, project, limit = 8) {
 export const reviewKey = (project) => `notes_review:${String(project).toLowerCase()}`;
 export function notesReview(db, project) {
   try { return JSON.parse(db.prepare('SELECT value FROM meta WHERE key = ?').get(reviewKey(project))?.value || 'null'); } catch { return null; }
+}
+
+// Repeated mistakes the LLM proposes for a project's "known mistakes" list: { at, lessons: [{ ids, rule }] }.
+export const lessonsKey = (project) => `lessons:${String(project).toLowerCase()}`;
+export function lessons(db, project) {
+  try { return JSON.parse(db.prepare('SELECT value FROM meta WHERE key = ?').get(lessonsKey(project))?.value || 'null'); } catch { return null; }
 }
 
 // The last stretch of work before `until` across every project: the newest summary before it and those within

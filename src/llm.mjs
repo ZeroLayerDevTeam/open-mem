@@ -153,5 +153,12 @@ Cover: what the project is and its stack; how to build/test/run if known; curren
 conventions and gotchas; where important things live. Drop anything outdated. Never include secrets.
 Reply with ONLY a JSON object: {"brief": "..."}`;
 
+export const LESSONS_SYSTEM = `You find lessons worth writing down in a project's "known mistakes" list.
+You receive the bug fixes recorded for one project (id, date, session, title, one-line detail), newest first.
+Find mistakes that came back: the same root cause or the same wrong approach fixed in two or more different sessions.
+For each, write one rule a developer can follow to avoid it next time: imperative, concrete (names, paths, commands,
+error strings), at most 220 characters, in the same language as the records. Ignore one-off bugs.
+Reply with ONLY a JSON object: {"lessons": [{"ids": ["123", "456"], "rule": "..."}]} or {"lessons": []}`;
+
 // Which job a call does, from its system prompt (for the stats of the web viewer's LLM page).
-const TASKS = new Map([[OBSERVATION_SYSTEM, 'observation'], [SUMMARY_SYSTEM, 'summary'], [NOTES_REVIEW_SYSTEM, 'review'], [BRIEF_SYSTEM, 'brief']]);
+const TASKS = new Map([[OBSERVATION_SYSTEM, 'observation'], [SUMMARY_SYSTEM, 'summary'], [NOTES_REVIEW_SYSTEM, 'review'], [BRIEF_SYSTEM, 'brief'], [LESSONS_SYSTEM, 'lessons']]);

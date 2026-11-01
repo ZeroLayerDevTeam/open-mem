@@ -52,6 +52,12 @@ A detached background process drains the queue: the LLM decides whether a tool c
 
 **Notes review:** when a project's notes change, the LLM checks them for contradictions, outdated facts and duplicates (at most every `notesReviewHours`). Its findings appear at session start and on the project page; nothing is changed automatically.
 
+**Repeated mistakes:** once a day per project with new bug fixes, the LLM looks for mistakes fixed in two or more sessions and proposes one rule for each, to copy into the project's known-mistakes list. They appear on the project page only, so they cost Claude no context.
+
+**Recall that learns:** prompt recall notes whether the session then used what it showed (fetched the record, or read or edited one of its files). A record shown in `recallMuteAfter` sessions and never used stops being recalled. `status` shows how much recall gets used.
+
+**Stale tasks:** open tasks untouched for 14 days are marked on the task board.
+
 ### Tools Claude gets (MCP)
 
 | Tool | Use |
@@ -134,6 +140,8 @@ node "$OM" drain [--force] | sync # process the queue (--force: even while a gam
 node "$OM" busy [--unload]        # is a game running? (exit 0 = busy)
 node "$OM" embed [--all]          # compute missing embeddings now (--all: no per-run limit)
 node "$OM" review-notes my-project  # check a project's notes for contradictions now
+node "$OM" lessons my-project     # look for mistakes fixed in several sessions now
+node "$OM" backup [--out FILE] [--keep N]  # consistent copy of the database while it is in use
 node "$OM" export [--project P] [--out DIR]  # notes and tasks as Markdown, one file per project
 node "$OM" serve | token init | token reset | device add|list|remove | remote connect|disconnect
 node "$OM" config [set key value]
@@ -170,6 +178,7 @@ claude-open-mem never deletes claude-mem data.
 | `skipTools` | TodoWrite, AskUserQuestion, … | Tools never recorded |
 | `contextObservations` / `contextSummaries` / `contextTasks` | 12 / 3 / 10 | Amount injected at session start |
 | `recallOnPrompt` / `recallLimit` | `true` / 5 | Prompt-time recall |
+| `recallMuteAfter` | 5 | Stop recalling a record shown in this many sessions that never used it (0 = never) |
 | `briefEvery` | 25 | New records before a project brief is rewritten (0 = never) |
 | `excludedProjects` | `[]` | Folder names never recorded |
 | `autoImportClaudeMem` | `true` | Import claude-mem at session start |
@@ -184,6 +193,7 @@ claude-open-mem never deletes claude-mem data.
 | `branchWarning` / `dailyRecap` | `true` / `true` | Branch warning and first-session-of-the-day recap at session start |
 | `embedModel` / `embedPerDrain` | `embeddinggemma` / 2000 | Ollama embedding model (`''` = full-text only) and records embedded per drain |
 | `notesReview` / `notesReviewHours` | `true` / 12 | LLM review of changed notes, at most this often per project |
+| `lessonsReview` | `true` | Daily LLM search for mistakes fixed in several sessions (web project page only) |
 | `serveDrainMinutes` | 10 | `cli serve` drains the queue and runs the upkeep this often (0 = never) |
 | `wakeMac` | `""` | MAC of the machine that runs Ollama when it is not the server: `cli serve` wakes it (Wake-on-LAN) when queued work waits for the LLM, then drains once the LLM answers (`""` = never) |
 | `wakeBroadcast` | `255.255.255.255` | Broadcast address for the magic packet (e.g. `192.168.0.255`) |

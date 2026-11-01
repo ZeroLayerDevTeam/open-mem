@@ -1,7 +1,7 @@
 // Read models for the web viewer. Everything returns plain JSON-safe objects. Lists are paged:
 // { rows, total, page, pageSize } with 1-based pages.
 import { getItem, listItems } from './items.mjs';
-import { ftsQuery, getByRefs, notesReview, parseRef, searchCount, stats } from './store.mjs';
+import { ftsQuery, getByRefs, lessons, notesReview, parseRef, searchCount, stats } from './store.mjs';
 import { hybridSearch } from './semantic.mjs';
 
 const DAY = 24 * 3600 * 1000;
@@ -112,6 +112,7 @@ export function projectDetail(db, name) {
     notes: listItems(db, { kind: 'note', project, limit: 100 }),
     activity: activity(db, { project, days: 365 }),
     review: notesReview(db, project),
+    lessons: lessons(db, project),
   };
 }
 
