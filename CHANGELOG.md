@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.7
+
+- `config set llmKeepAlive <time>` checks the value before saving it (a Go duration such as `30s`, `10m` or `1h`; a bare number counts seconds and is stored with the unit, so `0` unloads at once and `-1` keeps the model loaded). The help lists it with the 10-minute default.
+
 ## 0.5.6
 
 - A client of a shared server pushes every 2 minutes while its queue drains. It only pushed when the queue emptied, so with several sessions keeping the queue full new records never reached the server.
