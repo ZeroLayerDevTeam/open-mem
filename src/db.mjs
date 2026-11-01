@@ -1,8 +1,10 @@
 // SQLite storage (node:sqlite, FTS5). One file: <dataDir>/open-mem.db
 import { DatabaseSync } from 'node:sqlite';
+import fs from 'node:fs';
+import path from 'node:path';
 import { dataPath, ensureDataDir } from './config.mjs';
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -247,6 +249,21 @@ CREATE TABLE IF NOT EXISTS llm_calls (
 CREATE INDEX IF NOT EXISTS llm_calls_at ON llm_calls (at);
 `;
 
+// v6: which records prompt recall showed in each session, and whether the session then used them (fetched the record
+// or touched one of its files). Records shown in many sessions and never used stop being recalled. Pruned after 90 days.
+const SCHEMA_V6 = `
+CREATE TABLE IF NOT EXISTS recall_log (
+  session_id TEXT NOT NULL,
+  ref TEXT NOT NULL,
+  files TEXT,
+  shown_at INTEGER NOT NULL,
+  used INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (session_id, ref)
+);
+CREATE INDEX IF NOT EXISTS recall_log_ref ON recall_log (ref);
+CREATE INDEX IF NOT EXISTS recall_log_at ON recall_log (shown_at);
+`;
+
 // Reconstruction metadata added to every captured record in v2.
 const V2_COLUMNS = {
   sessions: ['device TEXT', 'git_branch TEXT', 'git_commit TEXT', 'injected TEXT', 'last_seen_at INTEGER'],
@@ -279,6 +296,7 @@ function migrate(db) {
     db.exec('CREATE INDEX IF NOT EXISTS prompts_unsynced ON prompts (id) WHERE synced_at IS NULL');
     db.exec(SCHEMA_V4);
     db.exec(SCHEMA_V5);
+    db.exec(SCHEMA_V6);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     db.exec('COMMIT');
   } catch (err) {
@@ -315,4 +333,20 @@ export function getMeta(db, key) {
 export function setMeta(db, key, value) {
   db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value')
     .run(key, String(value));
+}
+
+// Consistent copy of the live database (WAL, other processes writing) to `dest`, checked before it counts.
+// VACUUM INTO waits on busy_timeout like any read; a copy that fails the integrity check is removed.
+export function backupDb(db, dest) {
+  if (fs.existsSync(dest)) throw new Error(`${dest} already exists`);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  db.prepare('VACUUM INTO ?').run(dest);
+  const copy = new DatabaseSync(dest, { readOnly: true });
+  let check;
+  try { check = copy.prepare('PRAGMA integrity_check').get().integrity_check; } finally { copy.close(); }
+  if (check !== 'ok') {
+    fs.rmSync(dest, { force: true });
+    throw new Error(`backup failed the integrity check: ${check}`);
+  }
+  return fs.statSync(dest).size;
 }

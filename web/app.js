@@ -91,6 +91,11 @@ $('#drawer-copy').addEventListener('click', async (e) => {
   const ref = e.currentTarget.dataset.ref;
   try { await navigator.clipboard.writeText(ref); toast(t('Copied {ref}', { ref })); } catch { toast(ref); }
 });
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-copy]');
+  if (!b) return;
+  try { await navigator.clipboard.writeText(b.dataset.copy); toast(t('Copied')); } catch { toast(t('Could not copy')); }
+});
 document.addEventListener('click', (e) => {
   const a = e.target.closest('[data-ref]');
   if (!a) return;
@@ -385,6 +390,9 @@ const projectPage = {
           <a class="title" href="#" data-ref="S${s.id}">${clip(s.request || t('Session summary'), 160)}</a>
           ${s.completed ? html`<p class="snippet">${excerpt(s.completed, 240)}</p>` : ''}</li>`)}</ul>` : emptyPanel(t('No session summaries yet.')))}
       </div><div class="stack">
+        ${p.lessons?.lessons?.length ? panel(t('Repeated mistakes'), html`<button class="btn ghost small" type="button" data-copy="${p.lessons.lessons.map((l) => `- ${l.rule}`).join('\n')}">${t('Copy as list')}</button>`,
+          html`<p class="muted">${t("Fixed in two or more sessions (local LLM, {day}). Worth adding to the project's known mistakes.", { day: dateShort(p.lessons.at) })}</p>
+          <ul class="list compact">${p.lessons.lessons.map((l) => html`<li><p class="snippet">${l.rule}</p><div class="lead">${l.ids.map((id) => refLink(id))}</div></li>`)}</ul>`) : ''}
         ${p.review?.flags?.length ? panel(t('Notes to check'), html`<span class="muted">${t('Local LLM review of {day}.', { day: dateShort(p.review.at) })}</span>`,
           html`<ul class="list compact">${p.review.flags.map((f) => html`<li><div class="lead">${typeTag(f.kind)}${f.ids.map((id) => refLink(id))}</div><p class="snippet">${f.reason}</p></li>`)}</ul>`) : ''}
         ${panel(t('Notes'), html`<a href="#/notes?${pq}">${t('All notes')}</a>`, p.notes.length
@@ -534,9 +542,12 @@ const sessionPage = {
 
 // --- tasks --------------------------------------------------------------------------------------------------------
 const COLUMNS = [['todo', 'To do'], ['doing', 'Doing'], ['blocked', 'Blocked'], ['done', 'Done']];
+// An open task nobody touched for STALE_DAYS: worth closing, resuming or cancelling.
+const STALE_DAYS = 14;
+const isStale = (task) => OPEN.includes(task.status) && Date.now() - task.updated_at > STALE_DAYS * DAY;
 const taskCard = (task, showProject) => html`<li class="card" data-p="${task.priority}" data-drag="1" data-id="${task.id}">
   <a class="title" href="#" data-ref="I${task.id}">${task.title}</a>
-  <div class="meta">${refLink(`I${task.id}`)}${showProject && task.project ? html`<span>${task.project}</span>` : ''}${task.due_at ? html`<span>${t('due {day}', { day: dateShort(task.due_at) })}</span>` : ''}<span>${ago(task.updated_at)}</span></div></li>`;
+  <div class="meta">${isStale(task) ? html`<span class="tag" data-type="outdated" title="${t('Untouched for {n} days: close it, resume it or cancel it.', { n: STALE_DAYS })}">${t('Stale')}</span>` : ''}${refLink(`I${task.id}`)}${showProject && task.project ? html`<span>${task.project}</span>` : ''}${task.due_at ? html`<span>${t('due {day}', { day: dateShort(task.due_at) })}</span>` : ''}<span>${ago(task.updated_at)}</span></div></li>`;
 
 // Drag a card to another column of its board to change its status. Pointer events, not HTML5 drag and drop: those
 // never fire on touch screens and stall in some embedded browsers. Mouse: drag past a few pixels. Touch: hold the
@@ -772,7 +783,7 @@ const searchPage = {
 
 // --- local LLM ----------------------------------------------------------------------------------------------------
 const RANGES = [[24, '24 hours'], [168, '7 days'], [720, '30 days']];
-const TASK_LABELS = { observation: 'Tool calls', summary: 'Turn summaries', brief: 'Project briefs', review: 'Notes reviews', embed: 'Embeddings', other: 'Other' };
+const TASK_LABELS = { observation: 'Tool calls', summary: 'Turn summaries', brief: 'Project briefs', review: 'Notes reviews', lessons: 'Repeated mistakes', embed: 'Embeddings', other: 'Other' };
 const gb = (bytes) => `${(Number(bytes || 0) / 1e9).toLocaleString(document.documentElement.lang, { maximumFractionDigits: 1 })} GB`;
 const num1 = (n) => Number(n).toLocaleString(document.documentElement.lang, { maximumFractionDigits: 1 });
 const ms = (n) => (n == null ? '-' : n < 1000 ? `${Math.round(n)} ms` : `${num1(n / 1000)} s`);
