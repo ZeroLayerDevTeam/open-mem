@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
 - `cli backup [--out FILE] [--keep N]`: a consistent copy of the database while it is in use (VACUUM INTO, which waits for writers through busy_timeout, then `integrity_check` on the copy; a bad copy is removed). Without `--out` it goes to `backups/` in the data folder and keeps the newest N (7). A backup script that ran VACUUM INTO on its own read-only connection failed with "database is locked" while the drainer was writing.
 - Recall that learns which records help: prompt recall logs what it showed per session (schema v6, `recall_log`, pruned after 90 days) and marks a record used when the session fetches it (`get_observations`, `timeline`) or reads or edits one of its files. A record shown in `recallMuteAfter` sessions (default 5, 0 = never) and never used is no longer recalled. Recall replies carry each record's files. `status` prints how much recall gets used.
