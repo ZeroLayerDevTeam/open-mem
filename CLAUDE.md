@@ -40,3 +40,5 @@ Claude Code plugin (id `open-mem`, marketplace `claude-open-mem`): local persist
 - `nvidia-smi` is not always on PATH (old Windows drivers, WSL): `gpu.mjs` also tries the driver's install paths.
 - SQLite cannot lock a file on a network share (SMB/CIFS): VACUUM INTO straight onto one hangs or fails with "database is locked". `backupDb` builds the copy in the data folder, then moves it.
 - `python - <<EOF` edits in Git Bash on Windows rewrite the whole file with CRLF and turn `'\n'` in the source into real line breaks: edit with Edit or a node script.
+- `serve` drains inside its own process, so a pid check alone cannot tell a running drain from a stale lock: `lockHeld` in `queue.mjs` covers that.
+- gemma3:12b does not match mistakes across sessions: left alone it pairs ids of one session (the filter drops them), told to cite two sessions it invents pairs of unrelated bugs. Do not loosen the filter or harden the prompt: 0 lessons beats wrong ones.
