@@ -7,7 +7,8 @@ user's Claude subscription (that was claude-mem's limit: it spends the 5-hour qu
 - Stack: Node ≥ 22.13, **zero dependencies** (`node:sqlite` + FTS5). No install step.
 - `src/hook.mjs` hooks (enqueue + context/recall) · `src/queue.mjs` background drainer (`drain.lock`), briefs, sync ·
   `src/store.mjs` records, search, recall, session context · `src/items.mjs` notes/tasks + history ·
-  `src/views.mjs` web read models · `src/server.mjs` HTTP API + web (`web/`) · `src/auth.mjs` admin token, device keys,
+  `src/views.mjs` web read models (paged: `{ rows, total, page, pageSize }`; sessions built from records, cached) ·
+  `src/server.mjs` HTTP API + web (`web/`: `app.js` pages, `ui.js` helpers, `i18n.js`; no build step) · `src/auth.mjs` admin token, device keys,
   web sessions · `src/sync.mjs` client push / server ingest · `src/backend.mjs` local vs remote with fallback ·
   `src/mcp-server.mjs` hand-written MCP stdio · `src/claudemem.mjs` import + uninstall · `src/cli.mjs` ·
   `src/semantic.mjs` Ollama embeddings + hybrid search (RRF over FTS and vectors) · `src/export.mjs` Markdown export.

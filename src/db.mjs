@@ -2,7 +2,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { dataPath, ensureDataDir } from './config.mjs';
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -216,6 +216,15 @@ CREATE TRIGGER IF NOT EXISTS emb_items_ad AFTER DELETE ON items BEGIN DELETE FRO
 CREATE TRIGGER IF NOT EXISTS emb_items_au AFTER UPDATE OF title, body ON items BEGIN DELETE FROM embeddings WHERE ref = 'I' || old.id; END;
 `;
 
+// v4: indexes for the web viewer: sessions built from records (imported ones have no sessions row), the paged
+// timeline and the machines list. Runs after addMissingColumns (device is a v2 column).
+const SCHEMA_V4 = `
+CREATE INDEX IF NOT EXISTS obs_session ON observations (session_id, created_at);
+CREATE INDEX IF NOT EXISTS sum_session ON summaries (session_id, created_at);
+CREATE INDEX IF NOT EXISTS sum_time ON summaries (created_at);
+CREATE INDEX IF NOT EXISTS obs_device ON observations (device, created_at);
+`;
+
 // Reconstruction metadata added to every captured record in v2.
 const V2_COLUMNS = {
   sessions: ['device TEXT', 'git_branch TEXT', 'git_commit TEXT', 'injected TEXT', 'last_seen_at INTEGER'],
@@ -246,6 +255,7 @@ function migrate(db) {
     db.exec('CREATE INDEX IF NOT EXISTS obs_unsynced ON observations (id) WHERE synced_at IS NULL');
     db.exec('CREATE INDEX IF NOT EXISTS sum_unsynced ON summaries (id) WHERE synced_at IS NULL');
     db.exec('CREATE INDEX IF NOT EXISTS prompts_unsynced ON prompts (id) WHERE synced_at IS NULL');
+    db.exec(SCHEMA_V4);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     db.exec('COMMIT');
   } catch (err) {

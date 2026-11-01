@@ -82,14 +82,19 @@ Ids: `123` observation, `S45` session summary, `I7` note or task.
 
 `http://127.0.0.1:37800` (started automatically in local mode; or run `cli serve`). Log in with the admin token.
 
-Sections: **Progress** (counters, activity, open tasks, latest sessions, machines), **Projects** (brief, tasks, notes,
-recent sessions, most-edited files, branches, notes to check, Markdown export), **Timeline** (everything by day,
-filterable), **Tasks** (one board per project, drag a card to change its status),
-**Notes**, **Search**, **Sessions** (prompt by prompt). Any record opens in a side panel with its metadata;
-notes and tasks can be edited there. On a phone, hold a task card for a moment, then drag it.
+Sections:
 
-English or Spanish (follows the browser language until you pick one) and an automatic, light or dark theme: both
-selectors sit at the bottom of the side menu (top right on a phone, and on the login page), remembered per browser.
+- **Progress**: task counters, a year of activity, open tasks, latest sessions, active projects and machines.
+- **Projects**: a sortable, filterable table; each project has its brief, open tasks, recent session summaries, notes, notes to check, most-edited files, branches and a Markdown export.
+- **Timeline**: everything by day, filtered by project, machine, kind of record and an "up to" date.
+- **Sessions**: every conversation, including the ones imported from claude-mem, searchable by prompt text; a session opens prompt by prompt with what was recorded for each.
+- **Tasks**: one board per project; drag a card to change its status (on a phone, hold it for a moment first).
+- **Notes**: searchable list with an inline editor.
+- **Search**: the same hybrid search Claude uses, with kind, project, type and date filters, highlighted matches and an excerpt per result.
+
+Every list is paged on the server (numbered pages, the page lives in the URL, so back, reload and shared links keep it), and the search box in the top bar (press `/`) works from any page. Any record opens in a side panel with its metadata; notes and tasks are edited there.
+
+The layout adapts from a phone (menu behind a button, stacked tables) to a wide screen. English or Spanish (follows the browser language until you pick one) and an automatic, light or dark theme: both selectors sit at the bottom of the side menu and on the login page, remembered per browser. No framework and no build step: plain ES modules, served gzipped.
 
 Security: HttpOnly + SameSite=Strict session cookie (30 days), origin check on writes, strict CSP, login rate limit.
 Lost the token? `cli token reset` prints a new one and logs every browser out. To reach it from other devices,

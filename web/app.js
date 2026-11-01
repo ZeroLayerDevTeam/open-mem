@@ -1,55 +1,19 @@
-// open-mem web viewer. No framework: hash routes, one fetch helper, escaped templates.
-import { LANGS, THEMES, lang, locale, setLang, setTheme, t, theme, translateStatic } from './i18n.js';
+// open-mem web viewer: hash routes, server-side paging, escaped templates. No framework and no build step.
+// The URL holds every filter and page, so back/forward, reload and shared links restore the same view.
+import { LANGS, THEMES, lang, setLang, setTheme, t, theme, translateStatic } from './i18n.js';
+import {
+  $, $$, LOGIN_REQUIRED, ago, api, cached, clip, dateLong, dateShort, dateTime, debounce, duration, excerpt, fmt, highlight, html, icon, list, md,
+  metaItems, pager, qs, raw, refLink, refOf, timeOf, toast, tr, typeTag,
+} from './ui.js';
 
-const $ = (sel, el = document) => el.querySelector(sel);
 const view = $('#view');
+const enc = encodeURIComponent;
+const DAY = 864e5;
+const OPEN = ['todo', 'doing', 'blocked'];
 
-// --- escaped templates ----------------------------------------------------------
-class Raw { constructor(s) { this.s = s; } toString() { return this.s; } }
-const raw = (s) => new Raw(String(s));
-const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const flat = (v) => (v instanceof Raw ? v.s : Array.isArray(v) ? v.map(flat).join('') : v === false || v == null ? '' : esc(v));
-const html = (strings, ...vals) => raw(strings.reduce((acc, s, i) => acc + s + (i < vals.length ? flat(vals[i]) : ''), ''));
-// Translated text that contains markup (<code>) of our own dictionary, never user data.
-const tr = (text, vars) => raw(t(text, vars));
-
-// --- api -------------------------------------------------------------------------------
-const LOGIN_REQUIRED = 'login required';
-async function api(path, body) {
-  const res = await fetch(path, body === undefined ? { credentials: 'same-origin' } : {
-    method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (res.status === 401 && path !== '/api/login') { showLogin(); throw new Error(LOGIN_REQUIRED); }
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data;
-}
-const q = (params) => new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== '')).toString();
-
-// --- formatting -----------------------------------------------------------------------
-const pad = (n) => String(n).padStart(2, '0');
-const dayOf = (ms) => { const d = new Date(Number(ms)); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
-const timeOf = (ms) => { const d = new Date(Number(ms)); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
-const weekday = (ms) => new Date(Number(ms)).toLocaleDateString(locale(), { weekday: 'short', month: 'short', day: 'numeric' });
-function ago(ms) {
-  if (!ms) return t('never');
-  const s = (Date.now() - Number(ms)) / 1000;
-  if (s < 60) return t('just now');
-  if (s < 3600) return t('{n} min ago', { n: Math.round(s / 60) });
-  if (s < 86400) return t('{n} h ago', { n: Math.round(s / 3600) });
-  if (s < 86400 * 30) return t('{n} d ago', { n: Math.round(s / 86400) });
-  return dayOf(ms);
-}
-const clip = (s, n) => { const v = String(s ?? '').replace(/\s+/g, ' ').trim(); return v.length > n ? `${v.slice(0, n - 1)}…` : v; };
-const list = (v) => { if (!v) return []; try { const a = JSON.parse(v); return Array.isArray(a) ? a : [String(v)]; } catch { return [String(v)]; } };
-const refOf = (r) => (r.kind === 'sum' ? `S${r.id}` : r.kind === 'item' || r.kind === 'event' ? `I${r.id}` : `${r.id}`);
-const refLink = (ref) => html`<a class="ref" href="#" data-ref="${ref}">${ref}</a>`;
-const typeTag = (type) => (type ? html`<span class="tag type-${type}">${t(type)}</span>` : '');
-const fmt = (n) => Number(n || 0).toLocaleString(locale());
-
-// --- language and theme ----------------------------------------------------------------
+// --- language and theme ----------------------------------------------------------------------------------------
 function fillPrefs() {
-  for (const sel of document.querySelectorAll('select[data-pref]')) {
+  for (const sel of $$('select[data-pref]')) {
     const isLang = sel.dataset.pref === 'lang';
     sel.innerHTML = (isLang ? LANGS : THEMES).map(([v, l]) => html`<option value="${v}">${isLang ? l : t(l)}</option>`).join('');
     sel.value = isLang ? lang : theme;
@@ -62,34 +26,71 @@ document.addEventListener('change', (e) => {
     setLang(e.target.value);
     fillPrefs();
     closeDrawer();
-    if (!$('#app').hidden) route();
+    if (!$('#app').hidden) { current = null; route(); }
   }
 });
 translateStatic();
 fillPrefs();
 
-// --- login --------------------------------------------------------------------------------
+// --- login -------------------------------------------------------------------------------------------------------
 function showLogin() {
+  closeDrawer();
   $('#app').hidden = true;
   $('#login').hidden = false;
   $('#token').focus();
 }
+window.addEventListener('om:login', showLogin);
 $('#login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('#login-error').textContent = '';
   try {
-    await api('/api/login', { token: $('#token').value.trim() });
+    await api('/api/login', { body: { token: $('#token').value.trim() } });
     $('#token').value = '';
     start();
-  } catch (err) { $('#login-error').textContent = err.message; }
+  } catch (err) { $('#login-error').textContent = t(err.message); }
 });
-$('#logout').addEventListener('click', async () => { await api('/api/logout', {}).catch(() => {}); showLogin(); });
+$('#logout').addEventListener('click', async () => { await api('/api/logout', { body: {} }).catch(() => {}); showLogin(); });
 
-// --- drawer ------------------------------------------------------------------------------------
+// --- side menu (off-canvas on narrow screens), global search, keyboard ------------------------------------------
+const side = $('#side');
+function setMenu(open) {
+  side.classList.toggle('open', open);
+  $('#scrim').hidden = !open;
+  $('#menu').setAttribute('aria-expanded', String(open));
+  if (open) $('.nav a[aria-current]', side)?.focus();
+}
+$('#menu').addEventListener('click', () => setMenu(!side.classList.contains('open')));
+$('#scrim').addEventListener('click', () => setMenu(false));
+
+$('#omni').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const input = $('#omni-input');
+  const q = input.value.trim();
+  input.value = '';
+  input.blur();
+  location.hash = `#/search?${qs({ q })}`;
+});
+const typing = (el) => Boolean(el?.closest?.('input, textarea, select, [contenteditable="true"]'));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && side.classList.contains('open')) setMenu(false);
+  if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && !typing(e.target) && !drawer.open) {
+    e.preventDefault();
+    const input = $('#q-main') || $('#omni-input');
+    input.focus();
+    input.select();
+  }
+});
+
+// --- record drawer --------------------------------------------------------------------------------------------
 const drawer = $('#drawer');
-function closeDrawer() { drawer.hidden = true; }
+let drawerToken = 0;
+function closeDrawer() { if (drawer.open) drawer.close(); }
 $('#drawer-close').addEventListener('click', closeDrawer);
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+drawer.addEventListener('click', (e) => { if (e.target === drawer) closeDrawer(); }); // the backdrop
+$('#drawer-copy').addEventListener('click', async (e) => {
+  const ref = e.currentTarget.dataset.ref;
+  try { await navigator.clipboard.writeText(ref); toast(t('Copied {ref}', { ref })); } catch { toast(ref); }
+});
 document.addEventListener('click', (e) => {
   const a = e.target.closest('[data-ref]');
   if (!a) return;
@@ -97,225 +98,445 @@ document.addEventListener('click', (e) => {
   openRecord(a.dataset.ref);
 });
 
-function metaList(r) {
-  const rows = [
-    ['Project', r.project], ['Directory', r.directory || r.cwd], ['Device', r.device], ['Branch', r.git_branch],
-    ['Commit', r.git_commit], ['Tool', r.tool], ['Model', r.model], ['Session', r.session_id && html`<a href="#/session/${encodeURIComponent(r.session_id)}">${clip(r.session_id, 18)}</a>`],
-    ['Prompt', r.prompt_number && `#${r.prompt_number}`], ['Created', r.created_at && `${dayOf(r.created_at)} ${timeOf(r.created_at)}`],
-    ['Updated', r.updated_at && `${dayOf(r.updated_at)} ${timeOf(r.updated_at)}`], ['Source', r.source],
-  ].filter(([, v]) => v);
-  return html`<dl>${rows.map(([k, v]) => html`<dt>${t(k)}</dt><dd>${v}</dd>`)}</dl>`;
-}
 const section = (label, body) => (body ? html`<h3>${t(label)}</h3>${body}` : '');
-const bullets = (v) => { const a = list(v); return a.length ? html`<ul>${a.map((x) => html`<li>${x}</li>`)}</ul>` : ''; };
+const bullets = (v) => { const a = list(v); return a.length ? html`<ul class="bullets">${a.map((x) => html`<li>${x}</li>`)}</ul>` : ''; };
+const files = (v) => { const a = list(v); return a.length ? html`<ul class="files">${a.map((x) => html`<li>${x}</li>`)}</ul>` : ''; };
+const sessionLink = (id) => html`<a href="#/session/${enc(id)}" class="mono">${clip(id, 24)}</a>`;
+
+function factsList(r) {
+  const rows = [
+    ['Project', r.project && html`<a href="#/project/${enc(r.project)}">${r.project}</a>`], ['Directory', (r.directory || r.cwd) && html`<span class="mono">${r.directory || r.cwd}</span>`],
+    ['Device', r.device], ['Branch', r.git_branch], ['Commit', r.git_commit && html`<span class="mono">${String(r.git_commit).slice(0, 12)}</span>`],
+    ['Tool', r.tool], ['Model', r.model], ['Session', r.session_id && sessionLink(r.session_id)], ['Prompt', r.prompt_number && `#${r.prompt_number}`],
+    ['Created', r.created_at && dateTime(r.created_at)], ['Updated', r.updated_at && dateTime(r.updated_at)], ['Source', r.source],
+  ].filter(([, v]) => v);
+  return html`<dl class="facts">${rows.map(([k, v]) => html`<dt>${t(k)}</dt><dd>${v}</dd>`)}</dl>`;
+}
 
 async function openRecord(ref) {
-  drawer.hidden = false;
-  $('#drawer-body').innerHTML = html`<p class="muted">${t('Loading…')}</p>`.s;
+  const my = ++drawerToken;
+  if (!drawer.open) drawer.showModal();
+  $('#drawer-title').innerHTML = html`<span class="ref">${ref}</span>`.s;
+  $('#drawer-copy').hidden = true;
+  const body = $('#drawer-body');
+  body.innerHTML = skeleton(6).s;
+  body.scrollTop = 0;
   let r;
-  try { r = await api(`/api/record?${q({ ref })}`); } catch (err) { $('#drawer-body').textContent = err.message; return; }
-  let body;
-  if (r.kind === 'sum') {
-    body = html`<p class="ref">S${r.id} · ${t('session summary')}</p><h2>${r.request || t('Session summary')}</h2>
-      ${[['Investigated', r.investigated], ['Learned', r.learned], ['Completed', r.completed], ['Next steps', r.next_steps], ['Notes', r.notes]]
-        .map(([k, v]) => section(k, v && html`<div class="prose">${v}</div>`))}
-      ${section('Files modified', bullets(r.files_modified))}${metaList(r)}`;
-  } else if (r.kind === 'item') {
-    body = html`<p class="ref">I${r.id} · ${t(r.item_kind)} · ${t(r.status)}</p>${itemEditor(r)}${metaList(r)}
-      ${section('History', html`<ul>${(r.events || []).map((e) => html`<li><span class="num">${dayOf(e.at)} ${timeOf(e.at)}</span> · ${t(e.event)}${e.to_status ? ` → ${t(e.to_status)}` : ''}${e.detail ? `: ${e.detail}` : ''}${e.device ? html` <span class="muted">(${e.device})</span>` : ''}</li>`)}</ul>`)}`;
-  } else {
-    body = html`<p class="ref">${r.id} · ${t('observation')} ${typeTag(r.type)}</p><h2>${r.title || t('(untitled)')}</h2>
-      ${r.subtitle ? html`<p class="muted">${r.subtitle}</p>` : ''}${r.narrative ? html`<div class="prose">${r.narrative}</div>` : ''}
-      ${section('Facts', bullets(r.facts))}${section('Concepts', list(r.concepts).length ? html`<p>${list(r.concepts).map((c) => html`<span class="tag">${c}</span> `)}</p>` : '')}
-      ${section('Files modified', bullets(r.files_modified))}${section('Files read', bullets(r.files_read))}${metaList(r)}
-      <p><button class="secondary" data-around="${r.id}">${t('What happened around this')}</button></p>`;
+  try { r = await api(`/api/record?${qs({ ref })}`); } catch (err) {
+    if (my === drawerToken) body.innerHTML = html`<p class="error-box">${err.message}</p>`.s;
+    return;
   }
-  $('#drawer-body').innerHTML = body;
-  wireItemEditor(r);
-  $('[data-around]', drawer)?.addEventListener('click', async (e) => {
-    const res = await api('/api/timeline', { anchor: e.target.dataset.around, before: 6, after: 6 });
-    e.target.replaceWith(Object.assign(document.createElement('div'), {
-      innerHTML: html`<ul class="rows">${(res.result || []).map((x) => html`<li><span>${refLink(refOf(x))}</span><span class="title" data-ref="${refOf(x)}">${x.anchor ? '▸ ' : ''}${clip(x.title, 100)}</span><span class="side">${dayOf(x.created_at)}</span></li>`)}</ul>`.s,
-    }));
-  });
+  if (my !== drawerToken) return;
+  const realRef = refOf(r);
+  $('#drawer-copy').dataset.ref = realRef;
+  $('#drawer-copy').hidden = false;
+  if (r.kind === 'sum') {
+    $('#drawer-title').innerHTML = html`<span class="ref">${realRef}</span><span class="tag" data-type="summary">${t('session summary')}</span>`.s;
+    body.innerHTML = html`<h2>${r.request || t('Session summary')}</h2>
+      ${[['Investigated', r.investigated], ['Learned', r.learned], ['Completed', r.completed], ['Next steps', r.next_steps], ['Notes', r.notes]]
+        .map(([k, v]) => section(k, v && html`<div class="prose">${md(v)}</div>`))}
+      ${section('Files modified', files(r.files_modified))}${factsList(r)}`.s;
+  } else if (r.kind === 'item') {
+    $('#drawer-title').innerHTML = html`<span class="ref">${realRef}</span>${typeTag(r.item_kind)}<span class="status" data-s="${r.status}">${t(r.status)}</span>`.s;
+    body.innerHTML = html`${itemEditor(r)}${factsList(r)}
+      ${section('History', html`<ul class="history">${(r.events || []).slice().reverse().map((e) => html`<li><time>${dateTime(e.at)}</time>${t(e.event)}${e.to_status ? ` → ${t(e.to_status)}` : ''}${e.detail ? `: ${e.detail}` : ''}${e.device ? html` <span class="muted">(${e.device})</span>` : ''}</li>`)}</ul>`)}`.s;
+    wireItemEditor(r);
+  } else {
+    $('#drawer-title').innerHTML = html`<span class="ref">${realRef}</span>${typeTag(r.type || 'observation')}`.s;
+    body.innerHTML = html`<h2>${r.title || t('(untitled)')}</h2>${r.subtitle ? html`<p class="subtitle">${r.subtitle}</p>` : ''}
+      ${r.narrative ? html`<div class="prose">${md(r.narrative)}</div>` : ''}
+      ${section('Facts', bullets(r.facts))}
+      ${section('Concepts', list(r.concepts).length ? html`<div class="chips">${list(r.concepts).map((c) => html`<a class="chip" href="#/search?${qs({ q: c })}">${c}</a>`)}</div>` : '')}
+      ${section('Files modified', files(r.files_modified))}${section('Files read', files(r.files_read))}${factsList(r)}
+      <div class="drawer-actions"><button class="btn" type="button" data-around="${r.id}">${icon('timeline')}${t('What happened around this')}</button>
+        ${r.session_id ? html`<a class="btn ghost" href="#/session/${enc(r.session_id)}">${icon('sessions')}${t('Open session')}</a>` : ''}</div>
+      <div id="around"></div>`.s;
+    $('[data-around]', body).addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      const res = await api('/api/timeline', { body: { anchor: btn.dataset.around, before: 6, after: 6 } });
+      $('#around').innerHTML = html`<h3>${t('Around this record')}</h3><ul class="list compact">${(res.result || []).map((x) => html`<li>
+        <div class="lead">${refLink(refOf(x))}${x.kind === 'sum' ? html`<span class="tag" data-type="summary">${t('session summary')}</span>` : typeTag(x.type)}<span>${dateTime(x.created_at)}</span></div>
+        <a class="title" href="#" data-ref="${refOf(x)}">${x.anchor ? html`<strong>${clip(x.title, 140)}</strong>` : clip(x.title, 140)}</a></li>`)}</ul>`.s;
+      btn.remove();
+    });
+  }
 }
+
 function itemEditor(r) {
   const isTask = r.item_kind === 'task';
   const statuses = isTask ? ['todo', 'doing', 'blocked', 'done', 'cancelled'] : ['active', 'archived'];
   return html`<form class="composer" id="item-form">
     <input type="text" name="title" value="${r.title}" aria-label="${t('Title')}" required>
-    <textarea name="body" aria-label="${t('Details')}">${r.body || ''}</textarea>
-    <div class="line">
+    <textarea name="body" aria-label="${t('Details')}" placeholder="${t('Details')}">${r.body || ''}</textarea>
+    <div class="row">
       <select name="status" aria-label="${t('Status')}">${statuses.map((s) => html`<option value="${s}" ${s === r.status ? raw('selected') : ''}>${t(s)}</option>`)}</select>
-      ${isTask ? html`<select name="priority" aria-label="${t('Priority')}">${[[1, 'High'], [2, 'Normal'], [3, 'Low']].map(([v, l]) => html`<option value="${v}" ${v === r.priority ? raw('selected') : ''}>${t(l)}</option>`)}</select>
-        <input type="date" name="due" aria-label="${t('Due date')}" value="${r.due_at ? dayOf(r.due_at) : ''}">` : ''}
+      ${isTask ? html`<select name="priority" aria-label="${t('Priority')}">${PRIORITIES.map(([v, l]) => html`<option value="${v}" ${v === r.priority ? raw('selected') : ''}>${t(l)}</option>`)}</select>
+        <input type="date" name="due" aria-label="${t('Due date')}" value="${r.due_at ? new Date(r.due_at).toISOString().slice(0, 10) : ''}">` : ''}
     </div>
     <input type="text" name="comment" placeholder="${t('Progress comment (optional)')}" aria-label="${t('Comment')}">
-    <div class="line"><button type="submit">${t('Save changes')}</button><button type="button" class="secondary" id="item-delete">${t('Delete')}</button></div>
-    <p class="error" id="item-error"></p>
+    <div class="row"><button type="submit" class="btn primary">${t('Save changes')}</button><span class="grow"></span><button type="button" class="btn danger" id="item-delete">${t('Delete')}</button></div>
+    <p class="form-error" id="item-error" role="alert"></p>
   </form>`;
 }
+const PRIORITIES = [[1, 'High'], [2, 'Normal'], [3, 'Low']];
+
 function wireItemEditor(r) {
   const form = $('#item-form');
-  if (!form) return;
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const f = new FormData(form);
     const patch = { title: f.get('title'), body: f.get('body'), status: f.get('status'), comment: f.get('comment') || undefined };
     if (f.has('priority')) patch.priority = Number(f.get('priority'));
     if (f.has('due')) patch.due = f.get('due') || null;
-    try { await api('/api/items/update', { id: r.id, patch }); openRecord(`I${r.id}`); route(); } catch (err) { $('#item-error').textContent = err.message; }
+    try {
+      await api('/api/items/update', { body: { id: r.id, patch } });
+      toast(t('Saved'));
+      openRecord(`I${r.id}`);
+      refresh();
+    } catch (err) { $('#item-error').textContent = err.message; }
   });
   $('#item-delete').addEventListener('click', async (e) => {
-    if (e.target.dataset.confirm !== '1') { e.target.dataset.confirm = '1'; e.target.textContent = t('Click again to delete for good'); return; }
-    await api('/api/items/delete', { id: r.id });
+    const btn = e.currentTarget;
+    if (btn.dataset.confirm !== '1') { btn.dataset.confirm = '1'; btn.textContent = t('Click again to delete for good'); return; }
+    await api('/api/items/delete', { body: { id: r.id } });
     closeDrawer();
-    route();
+    toast(t('Deleted'));
+    refresh();
   });
 }
 
-// --- views ---------------------------------------------------------------------------------------
-function activityStrip(rows, days = 119) {
-  const map = new Map(rows.map((r) => [r.day, r.n]));
+// --- shared bits of the pages -----------------------------------------------------------------------------------
+const head = (title, lede, actions = '') => html`<header class="page-head"><div><h1>${title}</h1>${lede ? html`<p class="lede">${lede}</p>` : ''}</div>${actions}</header>`;
+const kpi = (n, label, href, tone) => html`<a class="kpi" href="${href}" ${tone ? raw(`data-tone="${tone}"`) : ''}><b>${fmt(n)}</b><span>${label}</span></a>`;
+const stat = (value, label) => html`<div class="kpi"><b>${value}</b><span>${label}</span></div>`;
+const emptyPanel = (msg) => html`<p class="empty">${msg}</p>`;
+const skeleton = (n = 8) => html`<div class="skel" aria-hidden="true">${Array.from({ length: n }, () => raw('<i></i>'))}</div>`;
+const option = (value, label, selected) => html`<option value="${value}" ${selected ? raw('selected') : ''}>${label}</option>`;
+const projectOptions = (names, selected, none = t('All projects')) => html`${option('', none, !selected)}${names.map((p) => option(p, p, p === selected))}`;
+const meta = (items) => (items.some(Boolean) ? html`<div class="meta">${items}</div>` : '');
+
+function heatmap(rows, weeks) {
+  const counts = new Map(rows.map((r) => [r.day, r.n]));
   const max = Math.max(1, ...rows.map((r) => r.n));
-  const end = new Date(); end.setHours(0, 0, 0, 0);
-  const startDay = new Date(end); startDay.setDate(end.getDate() - days - end.getDay());
+  const now = new Date();
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const start = today - (((new Date(today).getUTCDay() + 6) % 7) + (weeks - 1) * 7) * DAY; // Monday, `weeks` columns back
+  const utc = { timeZone: 'UTC' };
+  const loc = document.documentElement.lang;
   const cells = [];
-  for (let d = new Date(startDay); d <= end; d.setDate(d.getDate() + 1)) {
-    const key = d.toISOString().slice(0, 10);
-    const n = map.get(key) || 0;
-    const l = n ? Math.min(4, Math.ceil((n / max) * 4)) : 0;
-    cells.push(html`<i data-l="${l}" title="${t('{day}: {n} records', { day: key, n })}"></i>`);
-  }
-  return html`<div class="strip" role="img" aria-label="${t('Records per day, last {n} days', { n: days })}">${cells}</div>`;
-}
-
-function taskRow(task) {
-  return html`<li><span>${refLink(`I${task.id}`)}</span><span class="title" data-ref="I${task.id}">${task.title}</span>
-    <span class="side"><span class="status ${task.status}">${t(task.status)}</span>${task.due_at ? ` · ${t('due {day}', { day: dayOf(task.due_at) })}` : ''}</span>
-    <span class="sub">${task.project || t('no project')}${task.directory ? ` · ${task.directory}` : ''}</span></li>`;
-}
-
-async function overviewView() {
-  const o = await api('/api/overview');
-  const s = o.stats;
-  const tasksBy = Object.fromEntries(o.tasks.map((x) => [x.status, x.n]));
-  view.innerHTML = html`<h1 class="page">${t('Progress')}</h1>
-    <p class="lede">${t('Everything Claude has remembered across your machines, and the work still open.')}</p>
-    <div class="figures">
-      <div class="figure"><b>${fmt(tasksBy.doing)}</b><span>${t('tasks in progress')}</span></div>
-      <div class="figure"><b>${fmt((tasksBy.todo || 0) + (tasksBy.blocked || 0))}</b><span>${t('tasks waiting')}</span></div>
-      <div class="figure"><b>${fmt(o.doneWeek)}</b><span>${t('tasks done this week')}</span></div>
-      <div class="figure"><b>${fmt(s.observations)}</b><span>${t('observations')}</span></div>
-      <div class="figure"><b>${fmt(s.summaries)}</b><span>${t('session summaries')}</span></div>
-      <div class="figure"><b>${fmt(s.notes)}</b><span>${t('notes')}</span></div>
-    </div>
-    <h2>${t('Activity')}</h2>${activityStrip(o.activity)}
-    <div class="two">
-      <div><h2>${t('Open tasks')}</h2>${o.openTasks.length ? html`<ul class="rows">${o.openTasks.map(taskRow)}</ul>` : html`<p class="empty">${tr('No open tasks. Ask Claude to track work with <code>task_add</code>, or add one under Tasks.')}</p>`}
-        <h2>${t('Latest sessions')}</h2><ul class="rows">${o.recentSessions.map((x) => html`<li><span class="ref num">${timeOf(x.started_at)}</span>
-          <a class="title" href="#/session/${encodeURIComponent(x.session_id)}">${clip(x.first_request || x.first_prompt || t('(no prompt)'), 110)}</a>
-          <span class="side">${ago(x.started_at)}</span><span class="sub">${x.project}${x.device ? ` · ${x.device}` : ''} · ${t('{n} prompts', { n: x.prompt_counter })} · ${t('{n} observations', { n: x.obs })}</span></li>`)}</ul></div>
-      <div><h2>${t('Active projects')}</h2><ul class="files">${o.projects.map((p) => html`<li><a href="#/project/${encodeURIComponent(p.project)}">${p.project}</a><span class="muted">${ago(p.last)}</span></li>`)}</ul>
-        ${o.devices.length ? html`<h2>${t('Machines')}</h2><ul class="files">${o.devices.map((d) => html`<li><span>${d.device}</span><span class="muted num">${fmt(d.n)} · ${ago(d.last)}</span></li>`)}</ul>` : ''}
-        ${s.unsynced ? html`<p class="muted">${t('{n} records not yet pushed to the shared server.', { n: fmt(s.unsynced) })}</p>` : ''}</div>
-    </div>`;
-}
-
-async function projectsView() {
-  const rows = await api('/api/projects');
-  view.innerHTML = html`<h1 class="page">${t('Projects')}</h1><p class="lede">${t('One card per working folder. Open one for its brief, tasks, notes and history.')}</p>
-    <input type="search" id="pfilter" placeholder="${t('Filter projects')}" aria-label="${t('Filter projects')}" style="max-width:320px;margin-bottom:16px">
-    <div class="grid" id="pgrid">${rows.map((p) => {
-      const total = p.openTasks + p.doneTasks;
-      return html`<article class="card" data-name="${p.project.toLowerCase()}"><a class="cover" href="#/project/${encodeURIComponent(p.project)}" aria-label="${p.project}"></a>
-        <h3>${p.project}</h3><div class="meta"><span>${t('{n} observations', { n: fmt(p.obs) })}</span><span>${t('{n} sessions', { n: fmt(p.sums) })}</span><span>${t('last {when}', { when: ago(p.last) })}</span></div>
-        <div class="meta"><span>${t('{open} open · {done} done', { open: p.openTasks, done: p.doneTasks })}</span><span>${t('{n} notes', { n: p.notes })}</span></div>
-        ${total ? html`<div class="bar" title="${t('{done} of {total} tasks done', { done: p.doneTasks, total })}"><span style="width:${Math.round((p.doneTasks / total) * 100)}%"></span></div>` : ''}</article>`;
-    })}</div>`;
-  $('#pfilter').addEventListener('input', (e) => {
-    const v = e.target.value.toLowerCase();
-    for (const c of view.querySelectorAll('.card')) c.hidden = !c.dataset.name.includes(v);
-  });
-}
-
-async function projectView(name) {
-  const p = await api(`/api/project?${q({ name })}`);
-  const open = p.tasks.filter((x) => ['todo', 'doing', 'blocked'].includes(x.status));
-  view.innerHTML = html`<p><a href="#/projects" class="muted">${t('Projects')}</a></p><h1 class="page">${p.project}</h1>
-    <p class="lede">${t('{obs} observations · {sums} sessions · since {first} · last {last}', { obs: fmt(p.obs), sums: fmt(p.sums), first: dayOf(p.first), last: ago(p.last) })}</p>
-    ${activityStrip(p.activity, 364)}
-    <div class="two"><div>
-      <h2>${t('Brief')}</h2>${p.brief ? html`<div class="brief">${p.brief.body}</div><p class="muted">${t('Generated {when}', { when: ago(p.brief.generated_at) })}${p.brief.model ? t(' by {model}', { model: p.brief.model }) : ''}${t('. Claude reads this at the start of every session.')}</p>`
-        : html`<p class="empty">${t('No brief yet. It is written by the local LLM after enough sessions.')}</p>`}
-      <h2>${t('Open tasks')}</h2>${open.length ? html`<ul class="rows">${open.map(taskRow)}</ul>` : html`<p class="muted">${t('None.')}</p>`}
-      <h2>${t('Recent sessions')}</h2><ul class="rows">${p.recent.map((s) => html`<li>${refLink(`S${s.id}`)}<span class="title" data-ref="S${s.id}">${clip(s.request, 120)}</span>
-        <span class="side">${dayOf(s.created_at)}</span>${s.completed ? html`<span class="sub">${clip(s.completed, 180)}</span>` : ''}</li>`)}</ul>
-      <p><a href="#/timeline?project=${encodeURIComponent(p.project)}">${t('Full timeline for {project}', { project: p.project })}</a></p>
-      <p><a href="/api/export?${q({ project: p.project })}" download>${t('Export notes and tasks (Markdown)')}</a></p>
-    </div><div>
-      ${p.review?.flags?.length ? html`<h2>${t('Notes to check')}</h2><ul class="rows">${p.review.flags.map((f) => html`<li>${f.ids.map((id) => refLink(id))} ${typeTag(f.kind)}<span class="sub">${f.reason}</span></li>`)}</ul>
-        <p class="muted">${t('Local LLM review of {day}.', { day: dayOf(p.review.at) })}</p>` : ''}
-      <h2>${t('Notes')}</h2>${p.notes.length ? html`<ul class="files">${p.notes.map((n) => html`<li><a href="#" data-ref="I${n.id}">${n.title}</a><span class="muted">${ago(n.updated_at)}</span></li>`)}</ul>` : html`<p class="muted">${t('None.')}</p>`}
-      <h2>${t('Most-edited files')}</h2><ul class="files">${p.files.map((f) => html`<li><span title="${f.file}">${f.file}</span><span class="num muted">${f.n}</span></li>`)}</ul>
-      ${p.branches.length ? html`<h2>${t('Branches')}</h2><ul class="files">${p.branches.map((b) => html`<li><span>${b.branch}</span><span class="muted">${ago(b.last)}</span></li>`)}</ul>` : ''}
-      <h2>${t('Kinds of observation')}</h2><p>${p.types.map((x) => html`${typeTag(x.type || 'other')} <span class="num muted">${x.n}</span> &nbsp;`)}</p>
-    </div></div>`;
-}
-
-async function timelineView(params) {
-  const project = params.get('project') || '';
-  const kinds = params.get('kinds') || 'obs,sum,event';
-  const projects = await api('/api/projects');
-  view.innerHTML = html`<h1 class="page">${t('Timeline')}</h1><p class="lede">${t('What happened, newest first. Filled dots are session summaries, red squares are note and task changes.')}</p>
-    <div class="toolbar"><select id="tproject" aria-label="${t('Project')}"><option value="">${t('All projects')}</option>${projects.map((p) => html`<option ${p.project === project ? raw('selected') : ''}>${p.project}</option>`)}</select>
-      ${[['obs', 'Observations'], ['sum', 'Summaries'], ['event', 'Notes & tasks']].map(([k, l]) => html`<button class="chip" data-kind="${k}" aria-pressed="${kinds.includes(k)}">${t(l)}</button>`)}</div>
-    <div class="spine" id="spine"></div><button class="secondary more" id="more" hidden>${t('Show older')}</button>`;
-  const go = (next) => { location.hash = `#/timeline?${q(next)}`; };
-  $('#tproject').addEventListener('change', (e) => go({ project: e.target.value, kinds }));
-  for (const b of view.querySelectorAll('[data-kind]')) {
-    b.addEventListener('click', () => {
-      const set = new Set(kinds.split(','));
-      set.has(b.dataset.kind) ? set.delete(b.dataset.kind) : set.add(b.dataset.kind);
-      go({ project, kinds: [...set].join(',') || 'obs' });
-    });
-  }
-  let lastDay = null;
-  let dayEl = null;
-  const load = async (before) => {
-    const { rows, next } = await api(`/api/feed?${q({ project, kinds, before, limit: 80 })}`);
-    for (const r of rows) {
-      const d = dayOf(r.at);
-      if (d !== lastDay) {
-        lastDay = d;
-        dayEl = document.createElement('section');
-        dayEl.className = 'day';
-        dayEl.innerHTML = html`<h3>${d.slice(5)}<small>${weekday(r.at)}</small></h3>`.s;
-        $('#spine').append(dayEl);
-      }
-      const e = document.createElement('div');
-      e.className = `entry ${r.kind}`;
-      const ref = refOf(r);
-      e.innerHTML = html`<span class="when">${timeOf(r.at)}</span>${refLink(ref)} ${typeTag(r.kind === 'sum' ? '' : r.type)}
-        <span class="t" data-ref="${ref}">${clip(r.title || t('(untitled)'), 140)}</span>
-        <div class="d">${[!project && r.project, r.device, r.git_branch, r.subtitle && clip(r.subtitle, 160)].filter(Boolean).join(' · ')}</div>`.s;
-      dayEl.append(e);
+  let lastMonth = -1;
+  for (let w = 0; w < weeks; w++) {
+    const first = new Date(start + w * 7 * DAY);
+    if (first.getUTCMonth() !== lastMonth) {
+      lastMonth = first.getUTCMonth();
+      if (w > 0 || first.getUTCDate() <= 21) cells.push(html`<span class="mo" style="grid-column:${w + 2}">${first.toLocaleDateString(loc, { ...utc, month: 'short' })}</span>`);
     }
-    if (!rows.length && !before) $('#spine').innerHTML = html`<p class="empty">${t('Nothing recorded yet for this filter.')}</p>`.s;
-    $('#more').hidden = !next;
-    $('#more').onclick = () => load(next);
-  };
-  await load();
+    for (let d = 0; d < 7; d++) {
+      const ms = start + (w * 7 + d) * DAY;
+      if (ms > today) break;
+      const n = counts.get(new Date(ms).toISOString().slice(0, 10)) || 0;
+      const l = n ? Math.max(1, Math.ceil(Math.sqrt(n / max) * 4)) : 0;
+      cells.push(html`<i style="grid-column:${w + 2};grid-row:${d + 2}" data-l="${l}" ${ms === today ? raw('class="today"') : ''} title="${t('{day}: {n} records', { day: new Date(ms).toLocaleDateString(loc, { ...utc, dateStyle: 'medium' }), n: fmt(n) })}"></i>`);
+    }
+  }
+  const wd = [0, 2, 4].map((d) => html`<span class="wd" style="grid-row:${d + 2}">${new Date(start + d * DAY).toLocaleDateString(loc, { ...utc, weekday: 'short' })}</span>`);
+  return html`<div class="heat-wrap"><div class="heat" style="--weeks:${weeks}" role="img" aria-label="${t('Records per day, last {n} weeks', { n: weeks })}">${wd}${cells}</div></div>
+    <div class="heat-legend" aria-hidden="true"><span>${t('Less')}</span>${[0, 1, 2, 3, 4].map((l) => html`<i data-l="${l}"></i>`)}<span>${t('More')}</span></div>`;
+}
+const scrollHeatToEnd = () => { for (const el of $$('.heat-wrap', view)) el.scrollLeft = el.scrollWidth; };
+
+const statusChip = (s) => html`<span class="status" data-s="${s}">${t(s)}</span>`;
+const taskItem = (task, showProject = true) => html`<li>
+  <div class="lead">${statusChip(task.status)}${refLink(`I${task.id}`)}${task.priority === 1 ? html`<span class="tag" data-type="bugfix">${t('High')}</span>` : ''}${task.due_at ? html`<span>${t('due {day}', { day: dateShort(task.due_at) })}</span>` : ''}</div>
+  <a class="title" href="#" data-ref="I${task.id}">${task.title}</a><span class="aside">${ago(task.updated_at)}</span>
+  ${showProject ? meta(metaItems({ project: task.project })) : ''}</li>`;
+
+const sessionTitle = (x) => clip(x.first_request || x.first_prompt || t('(no prompt)'), 160);
+const sessionItem = (x, showProject = true) => html`<li>
+  <div class="lead"><span class="num">${dateShort(x.started_at)}, ${timeOf(x.started_at)}</span>${x.last_at - x.started_at > 60000 ? html`<span>${duration(x.last_at - x.started_at)}</span>` : ''}</div>
+  <a class="title" href="#/session/${enc(x.session_id)}">${sessionTitle(x)}</a><span class="aside">${ago(x.started_at)}</span>
+  ${meta(metaItems({ project: showProject && x.project, device: x.device, branch: x.git_branch, extra: [
+    html`<span class="meta-item">${icon('terminal')}${t('{n} prompts', { n: fmt(x.prompts) })}</span>`,
+    x.obs ? html`<span class="meta-item">${icon('timeline')}${t('{n} observations', { n: fmt(x.obs) })}</span>` : '',
+  ] }))}</li>`;
+
+// Filter changes rewrite the URL; typing replaces the history entry instead of adding one per key.
+function setParams(patch, { replace = false } = {}) {
+  const [path, query = ''] = location.hash.replace(/^#/, '').split('?');
+  const p = new URLSearchParams(query);
+  for (const [k, v] of Object.entries(patch)) (v == null || v === '' ? p.delete(k) : p.set(k, v));
+  if (!('page' in patch)) p.delete('page');
+  const next = `#${path || '/overview'}${p.toString() ? `?${p}` : ''}`;
+  if (replace) { history.replaceState(null, '', next); route(); } else location.hash = next;
+}
+function pageHref(n) {
+  const [path, query = ''] = location.hash.replace(/^#/, '').split('?');
+  const p = new URLSearchParams(query);
+  if (n > 1) p.set('page', n); else p.delete('page');
+  return `#${path}${p.toString() ? `?${p}` : ''}`;
+}
+const pageOf = (params) => Math.max(1, Number(params.get('page')) || 1);
+
+// --- progress -----------------------------------------------------------------------------------------------------
+const overviewPage = {
+  async render({ signal }) {
+    const o = await api('/api/overview', { signal });
+    const s = o.stats;
+    const by = Object.fromEntries(o.tasks.map((x) => [x.status, x.n]));
+    const top = Math.max(1, ...o.projects.map((p) => p.obs + p.sums));
+    view.innerHTML = html`${head(t('Progress'), t('Everything Claude has remembered across your machines, and the work still open.'))}
+      <section class="kpis" aria-label="${t('Summary')}">
+        ${kpi(by.doing, t('tasks in progress'), '#/tasks', 'doing')}${kpi((by.todo || 0) + (by.blocked || 0), t('tasks waiting'), '#/tasks')}
+        ${kpi(o.doneWeek, t('tasks done this week'), '#/tasks')}${kpi(s.observations, t('observations'), '#/timeline?kinds=obs')}
+        ${kpi(s.sessions, t('sessions'), '#/sessions')}${kpi(s.projects, t('projects'), '#/projects')}
+      </section>
+      <section class="panel"><header class="panel-head"><h2>${t('Activity')}</h2><span class="muted">${t('Records per day, last {n} weeks', { n: 53 })}</span></header>${heatmap(o.activity, 53)}</section>
+      <div class="cols">
+        <section class="panel"><header class="panel-head"><h2>${t('Open tasks')}</h2><a href="#/tasks">${t('All tasks')}</a></header>
+          ${o.openTasks.length ? html`<ul class="list compact">${o.openTasks.map((x) => taskItem(x))}</ul>` : emptyPanel(tr('No open tasks. Ask Claude to track work with <code>task_add</code>, or add one under Tasks.'))}</section>
+        <section class="panel"><header class="panel-head"><h2>${t('Latest sessions')}</h2><a href="#/sessions">${t('All sessions')}</a></header>
+          ${o.recentSessions.length ? html`<ul class="list compact">${o.recentSessions.map((x) => sessionItem(x))}</ul>` : emptyPanel(t('No sessions yet.'))}</section>
+      </div>
+      <div class="cols">
+        <section class="panel"><header class="panel-head"><h2>${t('Active projects')}</h2><a href="#/projects">${t('All projects')}</a></header>
+          <ul class="kv">${o.projects.map((p) => html`<li><div class="share"><a class="k" href="#/project/${enc(p.project)}">${p.project}</a>
+            <div class="bar"><span style="width:${Math.max(2, Math.round(((p.obs + p.sums) / top) * 100))}%"></span></div></div><span class="v">${ago(p.last)}</span></li>`)}</ul></section>
+        <section class="panel"><header class="panel-head"><h2>${t('Machines')}</h2></header>
+          ${o.devices.length ? html`<ul class="kv">${o.devices.map((d) => html`<li><span class="k">${icon('device')} ${d.device}</span><span class="v">${t('{n} records', { n: fmt(d.n) })}, ${ago(d.last)}</span></li>`)}</ul>`
+            : emptyPanel(t('Records captured from now on carry the machine they came from.'))}
+          ${s.unsynced ? html`<p class="foot-note">${t('{n} records not yet pushed to the shared server.', { n: fmt(s.unsynced) })}</p>` : ''}</section>
+      </div>`;
+    scrollHeatToEnd();
+  },
+};
+
+// --- projects ---------------------------------------------------------------------------------------------------
+const PROJECT_SORT = {
+  project: (p) => p.project.toLowerCase(), last: (p) => p.last, obs: (p) => p.obs, sessions: (p) => p.sessions, tasks: (p) => p.openTasks, notes: (p) => p.notes,
+};
+const projectsPage = {
+  rows: [],
+  async render(ctx) {
+    this.rows = await cached('/api/projects', ctx);
+    view.innerHTML = html`${head(t('Projects'), t('One row per working folder. Open one for its brief, tasks, notes and history.'))}
+      <div class="toolbar"><input type="search" id="pfilter" placeholder="${t('Filter projects')}" aria-label="${t('Filter projects')}" value="${ctx.params.get('q') || ''}"></div>
+      <div id="results"></div>`;
+    $('#pfilter').addEventListener('input', debounce((e) => setParams({ q: e.target.value }, { replace: true }), 150));
+    this.update(ctx);
+  },
+  update({ params }) {
+    const q = (params.get('q') || '').trim().toLowerCase();
+    const sort = PROJECT_SORT[params.get('sort')] ? params.get('sort') : 'last';
+    const dir = params.get('dir') || (sort === 'project' ? 'asc' : 'desc');
+    const key = PROJECT_SORT[sort];
+    const rows = this.rows.filter((p) => p.project.toLowerCase().includes(q))
+      .sort((a, b) => { const x = key(a); const y = key(b); return (x < y ? -1 : x > y ? 1 : 0) * (dir === 'asc' ? 1 : -1); });
+    const size = 25;
+    const page = Math.min(pageOf(params), Math.max(1, Math.ceil(rows.length / size)));
+    const th = (k, label, num) => html`<th class="${num ? 'n' : ''}" ${sort === k ? raw(`aria-sort="${dir === 'asc' ? 'ascending' : 'descending'}"`) : ''}>
+      <button type="button" data-sort="${k}">${label}${icon(sort === k && dir === 'asc' ? 'chevron-up' : 'chevron-down')}</button></th>`;
+    const cell = (label, value, cls = 'n') => html`<td class="${cls}"><span class="lbl">${label}</span>${value}</td>`;
+    $('#results').innerHTML = (rows.length ? html`<div class="table-wrap"><table class="table">
+      <thead><tr>${th('project', t('Project'))}${th('last', t('Last activity'))}${th('obs', t('Observations'), 1)}${th('sessions', t('Sessions'), 1)}${th('tasks', t('Open tasks'), 1)}${th('notes', t('Notes'), 1)}</tr></thead>
+      <tbody>${rows.slice((page - 1) * size, page * size).map((p) => html`<tr>
+        <td><a class="pname" href="#/project/${enc(p.project)}">${p.project}</a><span class="sub">${t('since {day}', { day: dateShort(p.first) })}</span></td>
+        ${cell(t('Last activity'), ago(p.last), '')}${cell(t('Observations'), fmt(p.obs))}${cell(t('Sessions'), fmt(p.sessions))}
+        ${cell(t('Open tasks'), p.openTasks + p.doneTasks ? html`<span class="minibar" title="${t('{done} of {total} tasks done', { done: p.doneTasks, total: p.openTasks + p.doneTasks })}"><span class="bar"><span style="width:${Math.round((p.doneTasks / (p.openTasks + p.doneTasks)) * 100)}%"></span></span>${fmt(p.openTasks)}</span>` : '0')}
+        ${cell(t('Notes'), fmt(p.notes))}</tr>`)}</tbody></table></div>
+      ${pager({ page, pageSize: size, total: rows.length }, pageHref)}`
+      : emptyPanel(t('No project matches “{query}”.', { query: q }))).s;
+    for (const b of $$('[data-sort]', view)) {
+      b.addEventListener('click', () => {
+        const k = b.dataset.sort;
+        setParams({ sort: k, dir: k === sort ? (dir === 'asc' ? 'desc' : 'asc') : (k === 'project' ? 'asc' : 'desc') });
+      });
+    }
+  },
+};
+
+// A file path from the project folder down ("src/app.js" rather than "C:\Users\…\project\src\app.js").
+function inProject(file, project) {
+  const parts = String(file).split(/[\\/]/);
+  const i = parts.findLastIndex((x) => x.toLowerCase() === String(project).toLowerCase());
+  return i >= 0 && i < parts.length - 1 ? parts.slice(i + 1).join('/') : file;
 }
 
+const projectPage = {
+  async render({ arg, signal }) {
+    const p = await api(`/api/project?${qs({ name: arg })}`, { signal });
+    const open = p.tasks.filter((x) => OPEN.includes(x.status));
+    const pq = qs({ project: p.project });
+    const panel = (title, link, body) => html`<section class="panel"><header class="panel-head"><h2>${title}</h2>${link || ''}</header>${body}</section>`;
+    view.innerHTML = html`<nav class="crumbs"><a href="#/projects">${icon('arrow-left')}${t('Projects')}</a></nav>
+      ${head(p.project, t('First record {first}, last activity {last}', { first: dateShort(p.first), last: ago(p.last) }), html`<div class="actions">
+        <a class="btn" href="#/timeline?${pq}">${icon('timeline')}${t('Timeline')}</a><a class="btn" href="#/sessions?${pq}">${icon('sessions')}${t('Sessions')}</a>
+        <a class="btn ghost" href="/api/export?${pq}" download>${icon('download')}${t('Export')}</a></div>`)}
+      <section class="kpis">${kpi(p.obs, t('observations'), `#/timeline?${qs({ project: p.project, kinds: 'obs' })}`)}${kpi(p.sessions, t('sessions'), `#/sessions?${pq}`)}
+        ${kpi(p.openTasks, t('open tasks'), `#/tasks?${pq}`, p.openTasks ? 'doing' : '')}${kpi(p.notes, t('notes'), `#/notes?${pq}`)}</section>
+      <section class="panel"><header class="panel-head"><h2>${t('Activity')}</h2><span class="muted">${t('Records per day, last {n} weeks', { n: 53 })}</span></header>${heatmap(p.activity, 53)}</section>
+      <div class="cols wide-left"><div class="stack">
+        ${panel(t('Brief'), p.brief ? html`<span class="muted">${ago(p.brief.generated_at)}</span>` : '', p.brief
+          ? html`<div class="prose brief">${md(p.brief.body)}</div><p class="foot-note">${t('Claude reads this at the start of every session.')}${p.brief.model ? ` ${t('Written by {model}.', { model: p.brief.model })}` : ''}</p>`
+          : emptyPanel(t('No brief yet. It is written by the local LLM after enough sessions.')))}
+        ${panel(t('Open tasks'), html`<a href="#/tasks?${pq}">${t('Task board')}</a>`, open.length ? html`<ul class="list compact">${open.map((x) => taskItem(x, false))}</ul>` : emptyPanel(t('No open tasks.')))}
+        ${panel(t('Recent session summaries'), html`<a href="#/sessions?${pq}">${t('All sessions')}</a>`, p.recent.length ? html`<ul class="list compact">${p.recent.map((s) => html`<li>
+          <div class="lead">${refLink(`S${s.id}`)}<span>${dateShort(s.created_at)}, ${timeOf(s.created_at)}</span></div>
+          <a class="title" href="#" data-ref="S${s.id}">${clip(s.request || t('Session summary'), 160)}</a>
+          ${s.completed ? html`<p class="snippet">${excerpt(s.completed, 240)}</p>` : ''}</li>`)}</ul>` : emptyPanel(t('No session summaries yet.')))}
+      </div><div class="stack">
+        ${p.review?.flags?.length ? panel(t('Notes to check'), html`<span class="muted">${t('Local LLM review of {day}.', { day: dateShort(p.review.at) })}</span>`,
+          html`<ul class="list compact">${p.review.flags.map((f) => html`<li><div class="lead">${typeTag(f.kind)}${f.ids.map((id) => refLink(id))}</div><p class="snippet">${f.reason}</p></li>`)}</ul>`) : ''}
+        ${panel(t('Notes'), html`<a href="#/notes?${pq}">${t('All notes')}</a>`, p.notes.length
+          ? html`<ul class="kv">${p.notes.slice(0, 12).map((n) => html`<li><a class="k" href="#" data-ref="I${n.id}">${n.title}</a><span class="v">${ago(n.updated_at)}</span></li>`)}</ul>` : emptyPanel(t('No notes yet.')))}
+        ${p.files.length ? panel(t('Most-edited files'), '', html`<ul class="kv">${p.files.map((f) => html`<li><span class="k path" title="${f.file}">${inProject(f.file, p.project)}</span><span class="v">${fmt(f.n)}</span></li>`)}</ul>`) : ''}
+        ${p.branches.length ? panel(t('Branches'), '', html`<ul class="kv">${p.branches.map((b) => html`<li><span class="k">${icon('branch')} ${b.branch}</span><span class="v">${ago(b.last)}</span></li>`)}</ul>`) : ''}
+        ${p.types.length ? panel(t('Kinds of observation'), '', html`<div class="chips">${p.types.map((x) => html`<a class="chip" href="#/search?${qs({ kind: 'observations', type: x.type, project: p.project })}">${t(x.type || 'other')} <span class="num muted">${fmt(x.n)}</span></a>`)}</div>`) : ''}
+      </div></div>`;
+    scrollHeatToEnd();
+  },
+};
+
+// --- timeline -----------------------------------------------------------------------------------------------------
+const KINDS = [['obs', 'Observations'], ['sum', 'Summaries'], ['event', 'Notes & tasks']];
+const eventText = (r) => `${t(r.event)}${r.to_status ? ` → ${t(r.to_status)}` : ''}${r.subtitle ? `: ${r.subtitle}` : ''}`;
+const dayKey = (ms) => new Date(Number(ms)).toDateString();
+
+function feedEntry(r, showProject) {
+  const ref = refOf(r);
+  const sub = r.kind === 'event' ? eventText(r) : r.subtitle;
+  return html`<li class="entry" data-kind="${r.kind}">
+    <div class="head"><span class="when">${timeOf(r.at)}</span>${refLink(ref)}${r.kind === 'sum' ? html`<span class="tag" data-type="summary">${t('session summary')}</span>` : typeTag(r.type)}</div>
+    <a class="title" href="#" data-ref="${ref}">${clip(r.title || t('(untitled)'), 220)}</a>
+    ${sub ? html`<p class="sub">${excerpt(sub, 280)}</p>` : ''}
+    ${meta(metaItems({ project: showProject && r.project, device: r.device, branch: r.git_branch }))}</li>`;
+}
+
+function daySpine(rows, entry) {
+  const groups = [];
+  for (const r of rows) {
+    const k = dayKey(r.at);
+    if (groups.at(-1)?.k !== k) groups.push({ k, at: r.at, rows: [] });
+    groups.at(-1).rows.push(r);
+  }
+  const loc = document.documentElement.lang;
+  const thisYear = new Date().getFullYear();
+  return html`<div class="spine">${groups.map((g) => {
+    const d = new Date(g.at);
+    return html`<section class="day"><div class="day-label"><b>${d.toLocaleDateString(loc, { day: 'numeric', month: 'short', ...(d.getFullYear() !== thisYear ? { year: 'numeric' } : {}) })}</b>
+      <span>${d.toLocaleDateString(loc, { weekday: 'long' })}</span></div><ol class="day-items">${g.rows.map(entry)}</ol></section>`;
+  })}</div>`;
+}
+
+const timelinePage = {
+  async render(ctx) {
+    const f = await cached('/api/facets', ctx);
+    view.innerHTML = html`${head(t('Timeline'), t('Everything recorded, newest first. Filled dots are session summaries, red squares are note and task changes.'))}
+      <div class="toolbar">
+        <select id="t-project" aria-label="${t('Project')}">${projectOptions(f.projects, '')}</select>
+        ${f.devices.length > 1 ? html`<select id="t-device" aria-label="${t('Device')}">${option('', t('All machines'), true)}${f.devices.map((d) => option(d, d))}</select>` : ''}
+        <div class="seg" role="group" aria-label="${t('Show')}">${KINDS.map(([k, l]) => html`<button type="button" data-kind="${k}">${t(l)}</button>`)}</div>
+        <label class="inline">${t('Up to')}<input type="date" id="t-until"></label>
+      </div>
+      <div id="results"></div>`;
+    $('#t-project').addEventListener('change', (e) => setParams({ project: e.target.value }));
+    $('#t-device')?.addEventListener('change', (e) => setParams({ device: e.target.value }));
+    $('#t-until').addEventListener('change', (e) => setParams({ until: e.target.value }));
+    for (const b of $$('[data-kind]', view)) {
+      b.addEventListener('click', () => {
+        const set = new Set((new URLSearchParams(location.hash.split('?')[1]).get('kinds') || 'obs,sum,event').split(','));
+        set.has(b.dataset.kind) ? set.delete(b.dataset.kind) : set.add(b.dataset.kind);
+        setParams({ kinds: set.size === 3 || !set.size ? '' : [...set].join(',') });
+      });
+    }
+    await this.update(ctx);
+  },
+  async update({ params, signal }) {
+    const project = params.get('project') || '';
+    const kinds = params.get('kinds') || 'obs,sum,event';
+    const until = params.get('until') || '';
+    $('#t-project').value = project;
+    if ($('#t-device')) $('#t-device').value = params.get('device') || '';
+    $('#t-until').value = until;
+    for (const b of $$('[data-kind]', view)) b.setAttribute('aria-pressed', String(kinds.split(',').includes(b.dataset.kind)));
+    const before = until ? new Date(`${until}T00:00:00`).getTime() + DAY : undefined;
+    const results = $('#results');
+    results.setAttribute('aria-busy', 'true');
+    const data = await api(`/api/feed?${qs({ project, kinds, device: params.get('device'), before, page: pageOf(params), size: 50 })}`, { signal });
+    results.removeAttribute('aria-busy');
+    results.innerHTML = (data.rows.length
+      ? html`${daySpine(data.rows, (r) => feedEntry(r, !project))}${pager(data, pageHref)}`
+      : html`<div class="empty"><strong>${t('Nothing recorded for this filter.')}</strong>${t('Try another project, machine or date.')}</div>`).s;
+  },
+};
+
+// --- sessions -----------------------------------------------------------------------------------------------------
+const sessionsPage = {
+  async render(ctx) {
+    const f = await cached('/api/facets', ctx);
+    view.innerHTML = html`${head(t('Sessions'), t('Every Claude Code conversation, with the machine and branch it ran on.'))}
+      <div class="toolbar">
+        <input type="search" id="s-q" placeholder="${t('Search prompts')}" aria-label="${t('Search prompts')}">
+        <select id="s-project" aria-label="${t('Project')}">${projectOptions(f.projects, '')}</select>
+        ${f.devices.length > 1 ? html`<select id="s-device" aria-label="${t('Device')}">${option('', t('All machines'), true)}${f.devices.map((d) => option(d, d))}</select>` : ''}
+      </div>
+      <div id="results"></div>`;
+    $('#s-q').addEventListener('input', debounce((e) => setParams({ q: e.target.value }, { replace: true }), 300));
+    $('#s-project').addEventListener('change', (e) => setParams({ project: e.target.value }));
+    $('#s-device')?.addEventListener('change', (e) => setParams({ device: e.target.value }));
+    $('#s-q').value = ctx.params.get('q') || '';
+    await this.update(ctx);
+  },
+  async update({ params, signal }) {
+    const project = params.get('project') || '';
+    $('#s-project').value = project;
+    if ($('#s-device')) $('#s-device').value = params.get('device') || '';
+    if (document.activeElement !== $('#s-q')) $('#s-q').value = params.get('q') || '';
+    const data = await api(`/api/sessions?${qs({ project, device: params.get('device'), q: params.get('q'), page: pageOf(params), size: 30 })}`, { signal });
+    $('#results').innerHTML = (data.rows.length
+      ? html`<section class="panel"><ul class="list">${data.rows.map((x) => sessionItem(x, !project))}</ul></section>${pager(data, pageHref)}`
+      : html`<div class="empty"><strong>${t('No sessions match.')}</strong>${t('Sessions appear here as soon as Claude Code runs with the plugin.')}</div>`).s;
+  },
+};
+
+const sessionPage = {
+  async render({ arg, signal }) {
+    const s = await api(`/api/session?${qs({ id: arg })}`, { signal });
+    const x = s.session;
+    const obsBy = new Map();
+    for (const o of s.observations) { if (!obsBy.has(o.prompt_number)) obsBy.set(o.prompt_number, []); obsBy.get(o.prompt_number).push(o); }
+    const sumBy = new Map(s.summaries.map((m) => [m.prompt_number, m]));
+    const known = new Set(s.prompts.map((p) => p.prompt_number));
+    const loose = [...obsBy.entries()].filter(([n]) => !known.has(n)).flatMap(([, v]) => v);
+    const looseSums = s.summaries.filter((m) => !known.has(m.prompt_number));
+    const obsEntry = (o) => html`<li class="entry" data-kind="obs"><div class="head"><span class="when">${timeOf(o.created_at)}</span>${refLink(`${o.id}`)}${typeTag(o.type)}</div>
+      <a class="title" href="#" data-ref="${o.id}">${o.title || t('(untitled)')}</a>${o.subtitle ? html`<p class="sub">${clip(o.subtitle, 240)}</p>` : ''}</li>`;
+    const sumEntry = (m) => html`<li class="entry" data-kind="sum"><div class="head"><span class="when">${timeOf(m.created_at)}</span>${refLink(`S${m.id}`)}<span class="tag" data-type="summary">${t('session summary')}</span></div>
+      <a class="title" href="#" data-ref="S${m.id}">${clip(m.request || t('Session summary'), 200)}</a>${m.completed ? html`<p class="sub">${excerpt(m.completed, 280)}</p>` : ''}</li>`;
+    const promptEntry = (p) => {
+      const text = String(p.text || '');
+      return html`<li class="entry prompt-text" data-kind="prompt"><div class="head"><span class="when">${timeOf(p.created_at)}</span><span>${t('Prompt')}</span></div>
+        ${text.length > 700 ? html`<p class="title clipped">${text.slice(0, 700)}…</p><details><summary class="muted">${t('Show the full prompt')}</summary><p class="title">${text}</p></details>` : html`<p class="title">${text}</p>`}</li>`;
+    };
+    const block = (label, time, items) => html`<section class="day"><div class="day-label"><b>${label}</b><span>${time}</span></div><ol class="day-items">${items}</ol></section>`;
+    view.innerHTML = html`<nav class="crumbs"><a href="#/sessions">${icon('arrow-left')}${t('Sessions')}</a></nav>
+      ${head(sessionTitle({ first_prompt: s.prompts[0]?.text, first_request: s.summaries[0]?.request }), html`${dateLong(x.started_at)}, ${timeOf(x.started_at)}`)}
+      ${meta(metaItems({ project: x.project, device: x.device, branch: x.git_branch, extra: [x.cwd ? html`<span class="meta-item mono">${icon('folder')}${x.cwd}</span>` : ''] }))}
+      <section class="kpis gap-top">${stat(fmt(s.prompts.length), t('prompts'))}${stat(fmt(s.observations.length), t('observations'))}
+        ${stat(fmt(s.summaries.length), t('session summaries'))}${stat(x.last_at ? duration(x.last_at - x.started_at) : '-', t('duration'))}</section>
+      <div class="spine gap-top">
+        ${s.prompts.map((p) => block(`#${p.prompt_number}`, timeOf(p.created_at), html`${promptEntry(p)}${(obsBy.get(p.prompt_number) || []).map(obsEntry)}${sumBy.get(p.prompt_number) ? sumEntry(sumBy.get(p.prompt_number)) : ''}`))}
+        ${loose.length || looseSums.length ? block(t('Other records'), '', html`${loose.map(obsEntry)}${looseSums.map(sumEntry)}`) : ''}
+      </div>
+      <p class="foot-note mono">${x.session_id}</p>`;
+  },
+};
+
+// --- tasks --------------------------------------------------------------------------------------------------------
 const COLUMNS = [['todo', 'To do'], ['doing', 'Doing'], ['blocked', 'Blocked'], ['done', 'Done']];
-async function projectOptions(selected) {
-  const projects = await api('/api/projects');
-  return html`<option value="">${t('No project')}</option>${projects.map((p) => html`<option ${p.project === selected ? raw('selected') : ''}>${p.project}</option>`)}`;
-}
-
-const taskCard = (task, showProject) => html`<li class="task p${task.priority}" data-drag="1" data-id="${task.id}"><span class="t" data-ref="I${task.id}">${task.title}</span>
-  <div class="meta">${refLink(`I${task.id}`)}${showProject && task.project ? html`<span>${task.project}</span>` : ''}${task.due_at ? html`<span>${t('due {day}', { day: dayOf(task.due_at) })}</span>` : ''}<span>${ago(task.updated_at)}</span></div></li>`;
+const taskCard = (task, showProject) => html`<li class="card" data-p="${task.priority}" data-drag="1" data-id="${task.id}">
+  <a class="title" href="#" data-ref="I${task.id}">${task.title}</a>
+  <div class="meta">${refLink(`I${task.id}`)}${showProject && task.project ? html`<span>${task.project}</span>` : ''}${task.due_at ? html`<span>${t('due {day}', { day: dateShort(task.due_at) })}</span>` : ''}<span>${ago(task.updated_at)}</span></div></li>`;
 
 // Drag a card to another column of its board to change its status. Pointer events, not HTML5 drag and drop: those
 // never fire on touch screens and stall in some embedded browsers. Mouse: drag past a few pixels. Touch: hold the
@@ -327,10 +548,10 @@ function enableDrag(root) {
   let drag = null;
   const columnAt = (x, y) => document.elementFromPoint(x, y)?.closest('[data-status]');
   const mark = (col) => {
-    for (const c of root.querySelectorAll('.drop')) if (c !== col) c.classList.remove('drop');
+    for (const c of $$('.drop', root)) if (c !== col) c.classList.remove('drop');
     if (col && col.closest('.board') === drag.board && col !== drag.from) col.classList.add('drop');
   };
-  const start = () => {
+  const begin = () => {
     drag.active = true;
     drag.li.classList.add('dragging');
     try { drag.li.setPointerCapture(drag.pointer); } catch { /* pointer already gone */ }
@@ -339,15 +560,15 @@ function enableDrag(root) {
     if (!drag) return;
     clearTimeout(drag.hold);
     drag.li.classList.remove('dragging');
-    for (const c of root.querySelectorAll('.drop')) c.classList.remove('drop');
+    for (const c of $$('.drop', root)) c.classList.remove('drop');
     drag = null;
   };
   root.addEventListener('pointerdown', (e) => {
     const li = e.target.closest('li[data-drag]');
-    if (!li || e.button !== 0 || e.target.closest('a')) return;
+    if (!li || e.button !== 0 || e.target.closest('.ref')) return;
     const from = li.closest('[data-status]');
     drag = { li, from, board: from?.closest('.board'), pointer: e.pointerId, x: e.clientX, y: e.clientY, active: false, touch: e.pointerType === 'touch' };
-    if (drag.touch) drag.hold = setTimeout(() => drag && start(), 350);
+    if (drag.touch) drag.hold = setTimeout(() => drag && begin(), 350);
   });
   root.addEventListener('pointermove', (e) => {
     if (!drag || e.pointerId !== drag.pointer) return;
@@ -355,7 +576,7 @@ function enableDrag(root) {
     if (!drag.active) {
       if (drag.touch) { if (moved > 8) end(); return; } // a swipe before the hold: let the page scroll
       if (moved < 6) return;
-      start();
+      begin();
     }
     e.preventDefault();
     mark(columnAt(e.clientX, e.clientY));
@@ -374,141 +595,239 @@ function enableDrag(root) {
     root.addEventListener('click', swallow, { capture: true, once: true });
     setTimeout(() => root.removeEventListener('click', swallow, { capture: true }), 0);
     if (!col || col === from || col.closest('.board') !== board) return;
-    try { await api('/api/items/update', { id: Number(li.dataset.id), patch: { status: col.dataset.status } }); } catch (err) { alertLine(err.message); }
-    route();
+    try {
+      await api('/api/items/update', { body: { id: Number(li.dataset.id), patch: { status: col.dataset.status } } });
+      toast(t('Moved to {status}', { status: t(col.dataset.status) }));
+    } catch (err) { toast(err.message); }
+    refresh();
   });
 }
 
-const alertLine = (msg) => { const p = $('#board-error'); if (p) p.textContent = msg; };
-
-async function tasksView(params) {
-  const project = params.get('project') || '';
-  const { result: tasks } = await api('/api/items/list', { kind: 'task', project: project || undefined, limit: 500 });
-  const opts = await projectOptions(project);
-  const column = (st, label, rows, showProject) => html`<section class="col" data-status="${st}"><h3><span>${t(label)}</span><span class="num">${rows.length}</span></h3>
-    <ol>${rows.slice(0, st === 'done' ? 30 : 200).map((x) => taskCard(x, showProject))}</ol></section>`;
-  const inColumn = (st) => (x) => x.status === st || (st === 'done' && x.status === 'cancelled');
-  let body;
-  if (project) {
-    body = html`<div class="board">${COLUMNS.map(([st, label]) => column(st, label, tasks.filter(inColumn(st)), false))}</div>`;
-  } else {
-    // Every project: one lane per project with open tasks, busiest first; done tasks of the last 7 days.
-    const recent = Date.now() - 7 * 24 * 3600 * 1000;
-    const lanes = new Map();
-    for (const x of tasks) {
-      const open = ['todo', 'doing', 'blocked'].includes(x.status);
-      if (!open && !(x.status === 'done' && (x.completed_at || x.updated_at) >= recent)) continue;
-      const key = x.project || '';
-      if (!lanes.has(key)) lanes.set(key, []);
-      lanes.get(key).push(x);
+const tasksPage = {
+  async render({ params, signal }) {
+    const project = params.get('project') || '';
+    const [{ result: tasks }, f] = await Promise.all([
+      api('/api/items/list', { body: { kind: 'task', project: project || undefined, limit: 500 }, signal }),
+      cached('/api/facets', { signal }),
+    ]);
+    const column = (st, label, rows, showProject) => html`<section class="col" data-status="${st}"><h3><span>${t(label)}</span><span class="num">${rows.length}</span></h3>
+      <ol>${rows.slice(0, st === 'done' ? 30 : 200).map((x) => taskCard(x, showProject))}</ol>${st === 'done' && rows.length > 30 ? html`<p class="more-done">${t('{n} more', { n: rows.length - 30 })}</p>` : ''}</section>`;
+    const inColumn = (st) => (x) => x.status === st || (st === 'done' && x.status === 'cancelled');
+    let body;
+    if (project) {
+      body = html`<div class="board">${COLUMNS.map(([st, label]) => column(st, label, tasks.filter(inColumn(st)), false))}</div>`;
+    } else {
+      // Every project: one lane per project with open tasks, busiest first; done tasks of the last 7 days.
+      const recent = Date.now() - 7 * DAY;
+      const lanes = new Map();
+      for (const x of tasks) {
+        if (!OPEN.includes(x.status) && !(x.status === 'done' && (x.completed_at || x.updated_at) >= recent)) continue;
+        const key = x.project || '';
+        if (!lanes.has(key)) lanes.set(key, []);
+        lanes.get(key).push(x);
+      }
+      const openCount = (rows) => rows.filter((x) => x.status !== 'done').length;
+      const sorted = [...lanes.entries()].filter(([, l]) => openCount(l)).sort((a, b) => openCount(b[1]) - openCount(a[1]));
+      body = sorted.length ? html`<div class="lanes">${sorted.map(([name, rows]) => html`<section class="lane">
+          <header class="lane-head"><h2><a href="#/tasks?${qs({ project: name })}">${name || t('No project')}</a></h2><span class="num muted">${t('{n} open', { n: openCount(rows) })}</span></header>
+          <div class="board">${COLUMNS.map(([st, label]) => column(st, st === 'done' ? 'Done (7 days)' : label, rows.filter(inColumn(st)), false))}</div></section>`)}</div>`
+        : html`<div class="empty"><strong>${t('No open tasks.')}</strong>${tr('Ask Claude to track work with <code>task_add</code>, or add one above.')}</div>`;
     }
-    const openCount = (rows) => rows.filter((x) => x.status !== 'done').length;
-    const sorted = [...lanes.entries()].filter(([, l]) => openCount(l)).sort((a, b) => openCount(b[1]) - openCount(a[1]));
-    body = sorted.length ? html`<div class="lanes">${sorted.map(([name, rows]) => html`<section class="lane"><h2><a href="#/tasks?${q({ project: name })}">${name || t('No project')}</a>
-        <span class="num muted">${t('{n} open', { n: openCount(rows) })}</span></h2>
-      <div class="board">${COLUMNS.map(([st, label]) => column(st, st === 'done' ? 'Done (7 days)' : label, rows.filter(inColumn(st)), false))}</div></section>`)}</div>`
-      : html`<p class="empty">${t('No open tasks.')}</p>`;
-  }
-  view.innerHTML = html`<h1 class="page">${t('Tasks')}</h1><p class="lede">${tr('Durable to-dos Claude and you share across sessions and machines. Drag a card to another column to change its status; Claude moves them with <code>task_update</code>.')}</p>
-    <form class="composer" id="new-task"><div class="line"><input type="text" name="title" placeholder="${t('New task, as an action')}" aria-label="${t('New task')}" required>
-      <select name="project" aria-label="${t('Project')}">${opts}</select><select name="priority" aria-label="${t('Priority')}"><option value="2">${t('Normal')}</option><option value="1">${t('High')}</option><option value="3">${t('Low')}</option></select>
-      <button type="submit">${t('Add task')}</button></div></form>
-    <div class="toolbar"><select id="filter-project" aria-label="${t('Show project')}"><option value="">${t('All projects, by project')}</option>${raw(opts.s.replace(/^<option value="">[^<]*<\/option>/, ''))}</select>
-      ${project ? html`<a class="muted" href="/api/export?${q({ project })}" download>${t('Export notes and tasks (Markdown)')}</a>` : ''}</div>
-    <p id="board-error" class="error" role="alert"></p>${body}`;
-  enableDrag(view);
-  $('#filter-project').value = project;
-  $('#filter-project').addEventListener('change', (e) => { location.hash = `#/tasks?${q({ project: e.target.value })}`; });
-  $('#new-task').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
-    await api('/api/items/add', { kind: 'task', title: f.get('title'), project: f.get('project') || null, priority: Number(f.get('priority')) });
-    route();
-  });
+    view.innerHTML = html`${head(t('Tasks'), tr('Durable to-dos Claude and you share across sessions and machines. Drag a card to another column to change its status; Claude moves them with <code>task_update</code>.'),
+      project ? html`<div class="actions"><a class="btn ghost" href="/api/export?${qs({ project })}" download>${icon('download')}${t('Export')}</a></div>` : '')}
+      <form class="composer" id="new-task"><div class="row"><input type="text" name="title" placeholder="${t('New task, as an action')}" aria-label="${t('New task')}" required>
+        <select name="project" aria-label="${t('Project')}">${projectOptions(f.projects, project, t('No project'))}</select>
+        <select name="priority" aria-label="${t('Priority')}">${PRIORITIES.map(([v, l]) => option(v, t(l), v === 2))}</select>
+        <button type="submit" class="btn primary">${icon('plus')}${t('Add task')}</button></div></form>
+      <div class="toolbar"><select id="filter-project" aria-label="${t('Show project')}">${projectOptions(f.projects, project, t('All projects, by project'))}</select></div>
+      ${body}`;
+    enableDrag(view);
+    $('#filter-project').addEventListener('change', (e) => setParams({ project: e.target.value }));
+    $('#new-task').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      await api('/api/items/add', { body: { kind: 'task', title: fd.get('title'), project: fd.get('project') || null, priority: Number(fd.get('priority')) } });
+      toast(t('Task added'));
+      refresh();
+    });
+  },
+};
+
+// --- notes --------------------------------------------------------------------------------------------------------
+const NOTE_STATUS = [['active', 'Active'], ['archived', 'Archived'], ['all', 'All']];
+const notesPage = {
+  async render(ctx) {
+    const f = await cached('/api/facets', ctx);
+    const project = ctx.params.get('project') || '';
+    view.innerHTML = html`${head(t('Notes'), tr('Decisions, conventions and gotchas worth keeping. Claude writes them with <code>note_add</code> and reads them at session start.'))}
+      <details class="new"><summary class="btn primary">${icon('plus')}${t('New note')}</summary>
+        <form class="composer" id="new-note"><input type="text" name="title" placeholder="${t('Note title')}" aria-label="${t('Note title')}" required>
+          <textarea name="body" placeholder="${t('Details')}" aria-label="${t('Details')}"></textarea>
+          <div class="row"><select name="project" aria-label="${t('Project')}">${projectOptions(f.projects, project, t('No project'))}</select><button type="submit" class="btn primary">${t('Save note')}</button></div></form></details>
+      <div class="toolbar">
+        <input type="search" id="n-q" placeholder="${t('Search notes')}" aria-label="${t('Search notes')}">
+        <select id="n-project" aria-label="${t('Project')}">${projectOptions(f.projects, project)}</select>
+        <div class="seg" role="group" aria-label="${t('Status')}">${NOTE_STATUS.map(([k, l]) => html`<button type="button" data-nstatus="${k}">${t(l)}</button>`)}</div>
+      </div>
+      <div id="results"></div>`;
+    $('#n-q').value = ctx.params.get('q') || '';
+    $('#n-q').addEventListener('input', debounce((e) => setParams({ q: e.target.value }, { replace: true }), 250));
+    $('#n-project').addEventListener('change', (e) => setParams({ project: e.target.value }));
+    for (const b of $$('[data-nstatus]', view)) b.addEventListener('click', () => setParams({ status: b.dataset.nstatus === 'active' ? '' : b.dataset.nstatus }));
+    $('#new-note').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      await api('/api/items/add', { body: { kind: 'note', title: fd.get('title'), body: fd.get('body') || null, project: fd.get('project') || null } });
+      toast(t('Note saved'));
+      e.target.reset();
+      $('details.new').open = false;
+      refresh();
+    });
+    await this.update(ctx);
+  },
+  async update({ params, signal }) {
+    const status = params.get('status') || 'active';
+    $('#n-project').value = params.get('project') || '';
+    for (const b of $$('[data-nstatus]', view)) b.setAttribute('aria-pressed', String(b.dataset.nstatus === status));
+    const q = params.get('q') || '';
+    const data = await api(`/api/items?${qs({ kind: 'note', project: params.get('project'), status: status === 'all' ? '' : status, q, page: pageOf(params), size: 30 })}`, { signal });
+    $('#results').innerHTML = (data.rows.length ? html`<section class="panel"><ul class="list">${data.rows.map((n) => html`<li>
+        <div class="lead">${refLink(`I${n.id}`)}${n.status === 'archived' ? statusChip('archived') : ''}</div>
+        <a class="title" href="#" data-ref="I${n.id}">${highlight(n.title, q)}</a><span class="aside">${ago(n.updated_at)}</span>
+        ${n.body ? html`<p class="snippet">${highlight(excerpt(n.body, 260), q)}</p>` : ''}${meta(metaItems({ project: n.project }))}</li>`)}</ul></section>${pager(data, pageHref)}`
+      : html`<div class="empty"><strong>${q ? t('No notes match “{query}”.', { query: q }) : t('No notes yet.')}</strong>${q ? '' : t('Write the first one with New note, or ask Claude to save a decision.')}</div>`).s;
+  },
+};
+
+// --- search -------------------------------------------------------------------------------------------------------
+const SEARCH_KINDS = [['all', 'Everything'], ['observations', 'Observations'], ['summaries', 'Summaries'], ['notes', 'Notes'], ['tasks', 'Tasks']];
+const recentKey = 'om-recent-searches';
+const readRecent = () => { try { return JSON.parse(localStorage.getItem(recentKey)) || []; } catch { return []; } };
+const remember = (q) => {
+  try { localStorage.setItem(recentKey, JSON.stringify([q, ...readRecent().filter((x) => x !== q)].slice(0, 8))); } catch { /* private mode */ }
+};
+
+function resultItem(r, q) {
+  const ref = refOf(r);
+  const tag = r.kind === 'sum' ? html`<span class="tag" data-type="summary">${t('session summary')}</span>` : typeTag(r.type);
+  return html`<li><div class="lead">${refLink(ref)}${tag}${r.kind === 'item' && r.status ? statusChip(r.status) : ''}</div>
+    <a class="title" href="#" data-ref="${ref}">${highlight(clip(r.title || t('(untitled)'), 200), q)}</a><span class="aside">${dateShort(r.created_at)}</span>
+    ${r.snippet ? html`<p class="snippet">${highlight(excerpt(r.snippet, 300), q)}</p>` : ''}
+    ${meta(metaItems({ project: r.project, device: r.device, branch: r.git_branch }))}</li>`;
 }
 
-async function notesView(params) {
-  const project = params.get('project') || '';
-  const { result: notes } = await api('/api/items/list', { kind: 'note', project: project || undefined, limit: 500 });
-  const opts = await projectOptions(project);
-  view.innerHTML = html`<h1 class="page">${t('Notes')}</h1><p class="lede">${tr('Decisions, conventions and gotchas worth keeping. Claude writes them with <code>note_add</code> and reads them at session start.')}</p>
-    <form class="composer" id="new-note"><input type="text" name="title" placeholder="${t('Note title')}" aria-label="${t('Note title')}" required>
-      <textarea name="body" placeholder="${t('Details')}" aria-label="${t('Details')}"></textarea>
-      <div class="line"><select name="project" aria-label="${t('Project')}">${opts}</select><button type="submit">${t('Save note')}</button></div></form>
-    ${notes.length ? html`<div class="grid">${notes.map((n) => html`<article class="card"><a class="cover" href="#" data-ref="I${n.id}" aria-label="${n.title}"></a>
-      <h3>${n.title}</h3><p class="muted">${clip(n.body, 180)}</p><div class="meta">${refLink(`I${n.id}`)}<span>${n.project || t('no project')}</span><span>${ago(n.updated_at)}</span>${n.status === 'archived' ? html`<span>${t('archived')}</span>` : ''}</div></article>`)}</div>`
-      : html`<p class="empty">${t('No notes yet.')}</p>`}`;
-  $('#new-note').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
-    await api('/api/items/add', { kind: 'note', title: f.get('title'), body: f.get('body') || null, project: f.get('project') || null });
-    route();
-  });
-}
+const searchPage = {
+  async render(ctx) {
+    const f = await cached('/api/facets', ctx);
+    view.innerHTML = html`${head(t('Search'), t('The same search Claude uses: full-text, plus meaning when the embedding model is available. Words match by prefix.'))}
+      <form class="searchbar" id="sform" role="search"><div class="field">${icon('search')}<input id="q-main" type="search" name="q" autocomplete="off" spellcheck="false"
+        placeholder="${t('What are you looking for?')}" aria-label="${t('Search')}"></div><button class="btn primary" type="submit">${t('Search')}</button></form>
+      <div class="toolbar">
+        <div class="seg" role="group" aria-label="${t('Kind')}">${SEARCH_KINDS.map(([k, l]) => html`<button type="button" data-skind="${k}">${t(l)}</button>`)}</div>
+        <select id="s-project" aria-label="${t('Project')}">${projectOptions(f.projects, '')}</select>
+        <select id="s-type" aria-label="${t('Type')}">${option('', t('Any type'), true)}${f.types.map((x) => option(x, t(x)))}</select>
+        <label class="inline">${t('From')}<input type="date" id="s-from"></label>
+        <label class="inline">${t('To')}<input type="date" id="s-to"></label>
+      </div>
+      <div id="results" aria-live="polite"></div>`;
+    $('#q-main').value = ctx.params.get('q') || '';
+    $('#sform').addEventListener('submit', (e) => { e.preventDefault(); setParams({ q: $('#q-main').value.trim() }); });
+    for (const b of $$('[data-skind]', view)) b.addEventListener('click', () => setParams({ kind: b.dataset.skind === 'all' ? '' : b.dataset.skind }));
+    $('#s-project').addEventListener('change', (e) => setParams({ project: e.target.value }));
+    $('#s-type').addEventListener('change', (e) => setParams({ type: e.target.value }));
+    $('#s-from').addEventListener('change', (e) => setParams({ from: e.target.value }));
+    $('#s-to').addEventListener('change', (e) => setParams({ to: e.target.value }));
+    if (!ctx.params.get('q')) $('#q-main').focus();
+    await this.update(ctx);
+  },
+  async update({ params, signal }) {
+    const q = params.get('q') || '';
+    const kind = params.get('kind') || 'all';
+    const filters = { project: params.get('project') || '', type: params.get('type') || '', from: params.get('from') || '', to: params.get('to') || '' };
+    if (document.activeElement !== $('#q-main')) $('#q-main').value = q;
+    for (const b of $$('[data-skind]', view)) b.setAttribute('aria-pressed', String(b.dataset.skind === kind));
+    $('#s-project').value = filters.project;
+    $('#s-type').value = filters.type;
+    $('#s-type').disabled = !['all', 'observations'].includes(kind);
+    $('#s-from').value = filters.from;
+    $('#s-to').value = filters.to;
+    const results = $('#results');
+    if (!q && kind === 'all' && !Object.values(filters).some(Boolean)) {
+      const recent = readRecent();
+      results.innerHTML = html`<div class="tips">
+        ${recent.length ? html`<section class="panel"><header class="panel-head"><h2>${t('Recent searches')}</h2></header><div class="chips">${recent.map((x) => html`<a class="chip" href="#/search?${qs({ q: x })}">${icon('clock')}${x}</a>`)}</div></section>` : ''}
+        <p>${t('Search a file name, an error message, a decision or a command. Filters on their own list the latest matching records.')}</p></div>`.s;
+      return;
+    }
+    if (q) remember(q);
+    results.setAttribute('aria-busy', 'true');
+    const data = await api(`/api/find?${qs({ q, kind, ...filters, type: $('#s-type').disabled ? '' : filters.type, page: pageOf(params), size: 25 })}`, { signal });
+    results.removeAttribute('aria-busy');
+    results.innerHTML = (data.rows.length
+      ? html`<p class="result-sum">${q ? (data.total === 1 ? t('1 result for “{query}”', { query: q }) : t('{n} results for “{query}”', { n: fmt(data.total), query: q })) : t('{n} records', { n: fmt(data.total) })}</p>
+        <section class="panel"><ul class="list">${data.rows.map((r) => resultItem(r, q))}</ul></section>${pager(data, pageHref)}`
+      : html`<div class="empty"><strong>${q ? t('No matches for “{query}”.', { query: q }) : t('Nothing matches these filters.')}</strong>${t('Try fewer words, another kind or a wider date range.')}</div>`).s;
+  },
+};
 
-async function searchView(params) {
-  const query = params.get('q') || '';
-  const kind = params.get('kind') || 'all';
-  view.innerHTML = html`<h1 class="page">${t('Search')}</h1><p class="lede">${t('The same search Claude uses: full-text, plus meaning when the embedding model is available. Words match by prefix.')}</p>
-    <form class="toolbar" id="sform"><input type="search" name="q" value="${query}" placeholder="${t('What are you looking for?')}" aria-label="${t('Search')}" autofocus>
-      <select name="kind" aria-label="${t('Kind')}">${[['all', 'Everything'], ['observations', 'Observations'], ['summaries', 'Summaries'], ['notes', 'Notes'], ['tasks', 'Tasks']].map(([v, l]) => html`<option value="${v}" ${v === kind ? raw('selected') : ''}>${t(l)}</option>`)}</select>
-      <button type="submit">${t('Search')}</button></form><div id="results"></div>`;
-  $('#sform').addEventListener('submit', (e) => { e.preventDefault(); const f = new FormData(e.target); location.hash = `#/search?${q({ q: f.get('q'), kind: f.get('kind') })}`; });
-  if (!query) return;
-  const { result } = await api('/api/search', { query, kind, limit: 100 });
-  $('#results').innerHTML = (result.length ? html`<ul class="rows">${result.map((r) => html`<li>${refLink(refOf(r))}<span class="title" data-ref="${refOf(r)}">${clip(r.title, 150)}</span>
-    <span class="side">${dayOf(r.created_at)}</span><span class="sub">${r.project} · ${t(r.type)}</span></li>`)}</ul>` : html`<p class="empty">${t('No matches for “{query}”.', { query })}</p>`).s;
-}
-
-async function sessionsView() {
-  const rows = await api('/api/sessions?limit=150');
-  view.innerHTML = html`<h1 class="page">${t('Sessions')}</h1><p class="lede">${t('Every Claude Code conversation, with the machine and branch it ran on.')}</p>
-    <ul class="rows">${rows.map((x) => html`<li><span class="ref num">${dayOf(x.started_at).slice(5)}</span>
-      <a class="title" href="#/session/${encodeURIComponent(x.session_id)}">${clip(x.first_request || x.first_prompt || t('(no prompt)'), 120)}</a>
-      <span class="side">${ago(x.started_at)}</span><span class="sub">${[x.project, x.device, x.git_branch, t('{n} prompts', { n: x.prompt_counter }), t('{n} observations', { n: x.obs })].filter(Boolean).join(' · ')}</span></li>`)}</ul>`;
-}
-
-async function sessionView(id) {
-  const s = await api(`/api/session?${q({ id })}`);
-  const byPrompt = new Map();
-  for (const o of s.observations) { if (!byPrompt.has(o.prompt_number)) byPrompt.set(o.prompt_number, []); byPrompt.get(o.prompt_number).push(o); }
-  const sumBy = new Map(s.summaries.map((x) => [x.prompt_number, x]));
-  view.innerHTML = html`<p><a href="#/sessions" class="muted">${t('Sessions')}</a></p><h1 class="page">${s.session.project}</h1>
-    <p class="lede">${[dayOf(s.session.started_at) + ' ' + timeOf(s.session.started_at), s.session.device, s.session.git_branch, s.session.cwd].filter(Boolean).join(' · ')}</p>
-    <div class="spine">${s.prompts.map((p) => html`<section class="day"><h3>#${p.prompt_number}<small>${timeOf(p.created_at)}</small></h3>
-      <div class="entry"><div class="t">${clip(p.text, 400)}</div></div>
-      ${(byPrompt.get(p.prompt_number) || []).map((o) => html`<div class="entry">${refLink(`${o.id}`)} ${typeTag(o.type)} <span class="t" data-ref="${o.id}">${o.title}</span></div>`)}
-      ${sumBy.get(p.prompt_number) ? html`<div class="entry sum">${refLink(`S${sumBy.get(p.prompt_number).id}`)} <span class="t" data-ref="S${sumBy.get(p.prompt_number).id}">${clip(sumBy.get(p.prompt_number).completed || t('Summary'), 200)}</span></div>` : ''}
-    </section>`)}</div>`;
-}
-
-// --- router -----------------------------------------------------------------------------------------
+// --- router ---------------------------------------------------------------------------------------------------------
+const ROUTES = {
+  overview: overviewPage, projects: projectsPage, project: projectPage, timeline: timelinePage, sessions: sessionsPage, session: sessionPage,
+  tasks: tasksPage, notes: notesPage, search: searchPage,
+};
 const TITLES = { overview: 'Progress', projects: 'Projects', project: 'Projects', timeline: 'Timeline', tasks: 'Tasks', notes: 'Notes', search: 'Search', sessions: 'Sessions', session: 'Sessions' };
+const NAV = { project: 'projects', session: 'sessions' };
+let current = null;
+let controller = null;
+
 async function route() {
   const [path, query = ''] = location.hash.replace(/^#\/?/, '').split('?');
   const params = new URLSearchParams(query);
-  const [name = 'overview', arg] = path.split('/');
-  for (const a of document.querySelectorAll('[data-nav]')) {
-    const on = a.dataset.nav === name || (name === 'project' && a.dataset.nav === 'projects') || (name === 'session' && a.dataset.nav === 'sessions');
-    on ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current');
+  const [first = 'overview', ...rest] = path.split('/');
+  const name = ROUTES[first] ? first : 'overview';
+  const arg = rest.length ? decodeURIComponent(rest.join('/')) : undefined;
+  closeDrawer();
+  setMenu(false);
+  for (const a of $$('[data-nav]')) {
+    if (a.dataset.nav === (NAV[name] || name)) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   }
-  const views = {
-    overview: overviewView, projects: projectsView, project: () => projectView(decodeURIComponent(arg)), timeline: timelineView,
-    tasks: tasksView, notes: notesView, search: searchView, sessions: sessionsView, session: () => sessionView(decodeURIComponent(arg)),
-  };
+  document.body.dataset.route = name;
+  document.title = `${t(TITLES[name])} · open-mem`;
+  controller?.abort();
+  controller = new AbortController();
+  const ctx = { params, arg, signal: controller.signal };
+  const page = ROUTES[name];
+  const update = current && current.name === name && current.arg === arg && page.update;
+  const scroll = !update || current.page !== params.get('page');
+  const busy = setTimeout(() => document.body.classList.add('busy'), 150);
   try {
-    await (views[name] || overviewView)(params);
+    if (update) await page.update(ctx);
+    else {
+      view.innerHTML = skeleton(10).s;
+      await page.render(ctx);
+      view.focus({ preventScroll: true });
+    }
+    current = { name, arg, page: params.get('page') };
+    if (scroll) window.scrollTo({ top: 0 });
   } catch (err) {
-    if (err.message !== LOGIN_REQUIRED) view.innerHTML = html`<p class="empty">${t('Could not load this page: {error}', { error: err.message })}</p>`.s;
+    if (err.name === 'AbortError' || err.message === LOGIN_REQUIRED) return;
+    current = null;
+    view.innerHTML = html`<p class="error-box">${t('Could not load this page: {error}', { error: err.message })}</p>`.s;
+  } finally {
+    clearTimeout(busy);
+    if (ctx.signal === controller.signal) document.body.classList.remove('busy');
   }
-  document.title = `open-mem · ${t(TITLES[name] || 'Progress')}`;
 }
+// Re-render the current page after a write (data changed under it).
+function refresh() { current = null; route(); }
 
 async function start() {
   const me = await api('/api/me');
   if (!me.authenticated) return showLogin();
   $('#login').hidden = true;
   $('#app').hidden = false;
+  api('/api/meta').then((m) => { $('#version').textContent = `open-mem ${m.version}`; }).catch(() => {});
+  current = null;
   route();
 }
 window.addEventListener('hashchange', route);
