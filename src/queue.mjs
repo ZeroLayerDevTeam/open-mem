@@ -14,7 +14,8 @@ import { sessionMeta } from './meta.mjs';
 import { redact } from './redact.mjs';
 import { clip as clipLine, insertObservation, notesReview, reviewKey, promptText, sessionInfo, turnObservations, upsertSummary } from './store.mjs';
 import { embedPending } from './semantic.mjs';
-import { pushPending } from './sync.mjs';
+import { pushPending, remoteFetch } from './sync.mjs';
+import { reportGpu } from './gpu.mjs';
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cli.mjs');
 const STALE_CLAIM_MS = 10 * 60 * 1000;
@@ -362,6 +363,10 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
     } else await upkeep(db, touched, provider, settings, checkBusy);
     if (settings.mode === 'remote' && settings.serverUrl && sync) {
       try { await pushPending(db, settings); } catch (err) { log('warn', `sync failed, will retry: ${err.message}`); }
+      // This machine runs the LLM: its GPU is the one the server's LLM page should show.
+      if (provider.kind === 'ollama') {
+        try { await reportGpu(db, (method, route, body) => remoteFetch(settings, method, route, body)); } catch (err) { log('warn', `GPU report failed: ${err.message}`); }
+      }
     }
   } finally {
     if (lock) releaseLock();

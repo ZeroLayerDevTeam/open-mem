@@ -337,6 +337,9 @@ const ES = {
   'nvidia-smi was not found. It comes with the NVIDIA driver: install or update the driver, or add nvidia-smi to PATH.':
     'No se encontró nvidia-smi. Viene con el driver de NVIDIA: instala o actualiza el driver, o añade nvidia-smi al PATH.',
   'nvidia-smi failed: {error}': 'nvidia-smi falló: {error}',
+  'on': 'en',
+  'The GPU is on another machine ({devices}): this server has no NVIDIA GPU of its own, so the page shows what that machine sent after its last queue run.':
+    'La GPU está en otra máquina ({devices}): este servidor no tiene GPU NVIDIA propia, así que la página muestra lo que esa máquina envió tras procesar su cola por última vez.',
   'No NVIDIA GPU found.': 'No se encontró una GPU NVIDIA.',
   Failed: 'Fallidas',
   'Generation speed (tokens per second)': 'Velocidad de generación (tokens por segundo)',

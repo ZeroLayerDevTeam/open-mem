@@ -938,14 +938,20 @@ const llmPage = {
           <div class="btns">${s.provider.model ? html`<button class="btn" type="button" data-action="load">${t('Load {model}', { model: s.provider.model })}</button>` : ''}
             ${o.loaded.length ? html`<button class="btn ghost" type="button" data-action="unload">${t('Free the memory')}</button>` : ''}</div>`;
 
-    const gpus = s.gpus?.length ? s.gpus.map((g) => {
+    const gpuCard = (g, from = '') => {
       const ratio = g.memTotalMb ? g.memUsedMb / g.memTotalMb : 0;
       return html`<div class="res"><div class="res-head"><b>${g.name}</b><span>${num1(g.memUsedMb / 1024)} / ${num1(g.memTotalMb / 1024)} GB</span></div>
         ${meter(ratio, t('Video memory in use'))}
-        <div class="minis">${g.util != null ? html`<span>${t('load')} <b>${g.util}%</b></span>` : ''}${g.temp != null ? html`<span>${t('temperature')} <b>${g.temp} °C</b></span>` : ''}
+        <div class="minis">${from ? html`<span>${from}</span>` : ''}${g.util != null ? html`<span>${t('load')} <b>${g.util}%</b></span>` : ''}${g.temp != null ? html`<span>${t('temperature')} <b>${g.temp} °C</b></span>` : ''}
           ${g.powerW != null ? html`<span>${t('power')} <b>${Math.round(g.powerW)} W</b></span>` : ''}</div></div>`;
-    }) : emptyPanel(s.gpuError === 'missing' ? t('nvidia-smi was not found. It comes with the NVIDIA driver: install or update the driver, or add nvidia-smi to PATH.')
-      : s.gpuError ? t('nvidia-smi failed: {error}', { error: s.gpuError }) : t('No NVIDIA GPU found.'));
+    };
+    // No NVIDIA GPU here but a machine that runs Ollama reported its own: show that one and say where it is.
+    const remote = s.gpus?.length ? [] : (s.remoteGpus || []);
+    const gpus = s.gpus?.length ? s.gpus.map((g) => gpuCard(g))
+      : remote.length ? html`${remote.map((r) => r.gpus.map((g) => gpuCard(g, html`${t('on')} <b>${r.device}</b>, ${ago(r.at)}`)))}
+        <p class="muted">${t('The GPU is on another machine ({devices}): this server has no NVIDIA GPU of its own, so the page shows what that machine sent after its last queue run.', { devices: remote.map((r) => r.device).join(', ') })}</p>`
+      : emptyPanel(s.gpuError === 'missing' ? t('nvidia-smi was not found. It comes with the NVIDIA driver: install or update the driver, or add nvidia-smi to PATH.')
+        : s.gpuError ? t('nvidia-smi failed: {error}', { error: s.gpuError }) : t('No NVIDIA GPU found.'));
 
     const legend = html`<div class="legend"><span><i class="sw-1"></i>${t('Done')}</span><span><i class="sw-crit"></i>${t('Failed')}</span></div>`;
     const span = (b) => `${bucketLabel(b.at, st.hours)}${st.hours <= 24 ? ` - ${timeOf(b.at + st.bucketMs)}` : ''}`;

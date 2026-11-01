@@ -164,3 +164,41 @@ test('server: the LLM page needs the admin; actions are POST, origin-checked, ad
     assert.equal(asDevice.status, 403);
   } finally { server.close(); db.close(); }
 });
+
+test('a machine that runs Ollama reports its GPU at most once a minute; the server keeps it per device', async () => {
+  const gpu = await import('../src/gpu.mjs');
+  const db = openDb(path.join(TMP, 'gpu.db'));
+  try {
+    const sent = [];
+    const send = async (...args) => { sent.push(args); };
+    const read = async () => ({ list: [{ index: 0, name: 'RTX 4060 Ti', memUsedMb: 900, memTotalMb: 16380, util: 3, temp: 41, powerW: 12 }], error: null });
+    assert.equal(await gpu.reportGpu(db, send, { now: 1e6, read }), true);
+    assert.equal(await gpu.reportGpu(db, send, { now: 1e6 + 30000, read }), false);
+    assert.equal(await gpu.reportGpu(db, send, { now: 1e6 + 61000, read: async () => ({ list: null, error: 'missing' }) }), false);
+    assert.deepEqual(sent.map(([m, r]) => `${m} ${r}`), ['POST /api/gpu']);
+
+    assert.equal(gpu.storeGpuReport(db, 'torre', { gpus: [{ name: 'x'.repeat(200), memUsedMb: '5', temp: 40, extra: 1 }] }, 5000), 1);
+    assert.deepEqual(gpu.gpuReports(db, 6000), [{ device: 'torre', at: 5000,
+      gpus: [{ index: null, name: 'x'.repeat(80), memUsedMb: null, memTotalMb: null, util: null, temp: 40, powerW: null }] }]);
+    assert.deepEqual(gpu.gpuReports(db, 5000 + 8 * 864e5), []);
+    assert.throws(() => gpu.storeGpuReport(db, 'torre', { gpus: [] }), /no GPU/);
+  } finally { db.close(); }
+});
+
+test('server: /api/gpu takes reports from devices only and the LLM page lists them', async () => {
+  const db = openDb(path.join(TMP, 'srv-gpu.db'));
+  const server = await serve(db, { ...DEFAULT_SETTINGS, provider: 'none' }, { host: '127.0.0.1', port: 0 });
+  const url = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const key = auth.addDevice(db, 'torre');
+    const report = (headers, body) => fetch(`${url}/api/gpu`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+    assert.equal((await report({}, { gpus: [{ name: 'RTX' }] })).status, 401);
+    assert.equal((await report({ authorization: `Bearer ${key}` }, { gpus: [] })).status, 400);
+    assert.equal((await report({ authorization: `Bearer ${key}` }, { gpus: [{ name: 'RTX', memUsedMb: 1, memTotalMb: 2 }] })).status, 200);
+    const token = auth.createAdminToken(db);
+    const login = await fetch(`${url}/api/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token }) });
+    const cookie = login.headers.get('set-cookie').split(';')[0];
+    const s = await (await fetch(`${url}/api/engine`, { headers: { cookie } })).json();
+    assert.deepEqual(s.remoteGpus.map((r) => [r.device, r.gpus[0].name]), [['torre', 'RTX']]);
+  } finally { server.close(); db.close(); }
+});
