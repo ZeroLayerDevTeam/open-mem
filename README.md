@@ -194,6 +194,10 @@ claude-open-mem never deletes claude-mem data.
 | `embedModel` / `embedPerDrain` | `embeddinggemma` / 2000 | Ollama embedding model (`''` = full-text only) and records embedded per drain |
 | `notesReview` / `notesReviewHours` | `true` / 12 | LLM review of changed notes, at most this often per project |
 | `serveDrainMinutes` | 10 | `cli serve` drains the queue and runs the upkeep this often (0 = never) |
+| `wakeMac` | `""` | MAC of the machine that runs Ollama when it is not the server: `cli serve` wakes it (Wake-on-LAN) when queued work waits for the LLM, then drains once the LLM answers (`""` = never) |
+| `wakeBroadcast` | `255.255.255.255` | Broadcast address for the magic packet (e.g. `192.168.0.255`) |
+| `wakeOffMinutes` | 10 | Quiet minutes after the last LLM call before `wakeOffCommand` runs; only a machine the server woke is turned off |
+| `wakeOffCommand` | `""` | Shell command that turns that machine off (e.g. over SSH). Exit 0 = turned off, 3 = in use, left on; anything else is retried after another quiet period |
 
 Set `CLAUDE_OPEN_MEM_DATA_DIR` to move the data folder.
 

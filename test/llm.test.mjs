@@ -202,3 +202,60 @@ test('server: /api/gpu takes reports from devices only and the LLM page lists th
     assert.deepEqual(s.remoteGpus.map((r) => [r.device, r.gpus[0].name]), [['torre', 'RTX']]);
   } finally { server.close(); db.close(); }
 });
+
+test('wake-on-lan: magic packet, then drain once the LLM answers, then off after the quiet period', async () => {
+  const wake = await import('../src/wake.mjs');
+  const pkt = wake.magicPacket('A0-AD-9F-BF-D8-4E');
+  assert.equal(pkt.length, 102);
+  assert.deepEqual([...pkt.subarray(0, 6)], [255, 255, 255, 255, 255, 255]);
+  assert.equal(pkt.subarray(96).toString('hex'), 'a0ad9fbfd84e');
+  assert.throws(() => wake.parseMac('12:34'), /invalid MAC/);
+
+  const db = openDb(path.join(TMP, 'wake.db'));
+  try {
+    const settings = { ...DEFAULT_SETTINGS, wakeMac: 'a0:ad:9f:bf:d8:4e', wakeOffMinutes: 10, wakeOffCommand: 'off' };
+    let up = false, draining = false;
+    const calls = [];
+    const deps = {
+      llmUp: async () => up, drainerRunning: () => draining, startDrainer: () => calls.push('drain'),
+      wake: async (mac) => calls.push(`wake ${mac}`), off: async () => { calls.push('off'); return { code: 0, out: 'ok' }; },
+    };
+    const T = 1e12;
+    const tick = (now) => wake.wakeTick(db, settings, deps, T + now);
+    const M = 60000;
+    assert.equal(await tick(0), 'asleep'); // nothing queued: nothing to wake for
+    db.prepare("INSERT INTO queue (kind, session_id, project, payload, status, attempts, created_at) VALUES ('observation', 's', 'p', '{}', 'pending', 0, 1)").run();
+    assert.equal(await tick(M), 'woken');
+    assert.equal(await tick(2 * M), 'waking'); // no second packet within 5 minutes
+    up = true;
+    assert.equal(await tick(3 * M), 'working');
+    db.prepare('DELETE FROM queue').run();
+    draining = true;
+    assert.equal(await tick(4 * M), 'working');
+    draining = false;
+    assert.equal(await tick(12 * M), 'cooling'); // 10 quiet minutes count from when the LLM came up (3 min)
+    assert.equal(await tick(14 * M), 'turned-off');
+    assert.deepEqual(calls, ['wake a0:ad:9f:bf:d8:4e', 'drain', 'off']);
+    assert.equal(await tick(30 * M), 'on'); // state cleared: a machine that is simply on is never turned off
+  } finally { db.close(); }
+});
+
+test('wake-on-lan: a machine in use stays on, a failed off is retried after another quiet period', async () => {
+  const wake = await import('../src/wake.mjs');
+  const db = openDb(path.join(TMP, 'wake2.db'));
+  try {
+    const M = 60000;
+    let code = 1;
+    const deps = { llmUp: async () => true, drainerRunning: () => false, startDrainer: () => {}, wake: async () => {}, off: async () => ({ code, out: '' }) };
+    const settings = { ...DEFAULT_SETTINGS, wakeMac: 'a0ad9fbfd84e', wakeOffMinutes: 10, wakeOffCommand: 'off' };
+    const { setMeta } = await import('../src/db.mjs');
+    setMeta(db, 'wake_woke_at', 1e12);
+    assert.equal(await wake.wakeTick(db, settings, deps, 1e12 + 0), 'cooling');
+    assert.equal(await wake.wakeTick(db, settings, deps, 1e12 + 11 * M), 'off-failed');
+    assert.equal(await wake.wakeTick(db, settings, deps, 1e12 + 15 * M), 'cooling');
+    code = 3;
+    assert.equal(await wake.wakeTick(db, settings, deps, 1e12 + 22 * M), 'in-use');
+    assert.equal(await wake.wakeTick(db, settings, deps, 1e12 + 40 * M), 'on');
+    assert.equal(await wake.wakeTick(db, { ...settings, wakeMac: '' }, deps, 0), 'off');
+  } finally { db.close(); }
+});

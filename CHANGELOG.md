@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Wake-on-LAN for a shared server whose Ollama runs on another machine (`wakeMac`, `wakeBroadcast`, `wakeOffMinutes`, `wakeOffCommand`, new `src/wake.mjs`). Every 30 s `cli serve` checks: queued work and the LLM not answering sends a magic packet (again after 5 minutes if still asleep); once the LLM answers it starts a drain; `wakeOffMinutes` after the last LLM call it runs `wakeOffCommand`. Only a machine the server woke is turned off, and the command decides whether it is in use (exit 3 leaves it on).
+
 ## 0.5.2
 
 - Local LLM page on a server without an NVIDIA GPU (Ollama on another machine, reached through a tunnel): the machine that runs Ollama sends its GPU (memory, load, temperature, power) after each queue run, at most once a minute (`POST /api/gpu`, device key only). The GPU panel shows it with the machine name and its age, and a note below says the GPU is on that other machine. Reports older than a week are dropped. The nvidia-smi code moved to `src/gpu.mjs`.
