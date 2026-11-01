@@ -1,1 +1,32 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#1C2733"/><rect x="14" y="16" width="36" height="8" rx="2" fill="#F2F4F7"/><rect x="14" y="28" width="36" height="8" rx="2" fill="#F2F4F7" opacity=".75"/><rect x="14" y="40" width="36" height="8" rx="2" fill="#F2F4F7" opacity=".5"/><circle cx="46" cy="20" r="3" fill="#B23A48"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <clipPath id="l"><rect x="0" y="0" width="238" height="512"/></clipPath>
+    <g id="lobes">
+      <circle cx="196" cy="176" r="74"/>
+      <circle cx="132" cy="246" r="66"/>
+      <circle cx="150" cy="326" r="62"/>
+      <circle cx="222" cy="352" r="62"/>
+      <circle cx="228" cy="252" r="70"/>
+    </g>
+  </defs>
+  <rect width="512" height="512" rx="104" fill="#1C2733"/>
+  <g fill="#F2F4F7">
+    <use href="#lobes" clip-path="url(#l)"/>
+    <g transform="translate(512 0) scale(-1 1)"><use href="#lobes" clip-path="url(#l)"/></g>
+  </g>
+  <!-- folds -->
+  <g fill="none" stroke="#1C2733" stroke-width="14" stroke-linecap="round">
+    <path d="M118 236c30-6 54 6 70 30"/>
+    <path d="M170 150c14 18 18 38 12 60"/>
+    <path d="M140 330c26 10 50 6 70-12"/>
+    <path d="M394 236c-30-6-54 6-70 30"/>
+    <path d="M342 150c-14 18-18 38-12 60"/>
+    <path d="M372 330c-26 10-50 6-70-12"/>
+  </g>
+  <!-- timeline spine in the fissure -->
+  <g>
+    <circle cx="256" cy="178" r="13" fill="#5FB3B7"/>
+    <circle cx="256" cy="256" r="13" fill="#5FB3B7"/>
+    <circle cx="256" cy="334" r="18" fill="#E06C7A"/>
+  </g>
+</svg>

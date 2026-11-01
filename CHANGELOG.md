@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.4
+
+- Plugin icon (512 px PNG + SVG source in `.claude-plugin/`); the web viewer uses the same mark.
+
 ## 0.2.3
 
 - No data loss while the LLM is down: once an LLM has been seen, queue items wait for it (`llmWaitHours`, default
