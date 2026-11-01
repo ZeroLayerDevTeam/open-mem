@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
 - `cli setup [--yes] [--model M] [--cpu]`: detects the GPU (NVIDIA through nvidia-smi, any card on Windows through the registry, AMD on Linux through amdgpu, Apple Silicon unified memory), installs Ollama when missing (winget, Homebrew or Ollama's script, after asking) and pulls the model that fits: 11 GB or more `gemma3:12b`, 5.5 to 11 GB `gemma3:4b`, 2 to 5.5 GB `gemma3:1b`, plus `embeddinggemma`. Without a usable GPU it installs nothing and lists the alternatives (no LLM, shared server, OpenAI-compatible endpoint, `--cpu`).
 - `cli check`: the GPU found and the model it fits (exit 2 = no usable GPU).
