@@ -2,13 +2,9 @@
 
 Open, local-first persistent memory for [Claude Code](https://claude.com/claude-code).
 
-claude-open-mem records what happens in your Claude Code sessions, compresses it into searchable observations and
-session summaries, and hands Claude a compact brief of each project at the start of every session, so it can start
-working instead of re-exploring the codebase. It is a drop-in alternative to [claude-mem](https://cmem.ai/) and
-imports your claude-mem history automatically.
+claude-open-mem records what happens in your Claude Code sessions, compresses it into searchable observations and session summaries, and hands Claude a compact brief of each project at the start of every session, so it can start working instead of re-exploring the codebase. It is a drop-in alternative to [claude-mem](https://cmem.ai/) and imports your claude-mem history automatically.
 
-**It never spends your Claude plan.** Compression runs on a local LLM through [Ollama](https://ollama.com), on any
-OpenAI-compatible endpoint you choose, or without any LLM at all.
+**It never spends your Claude plan.** Compression runs on a local LLM through [Ollama](https://ollama.com), on any OpenAI-compatible endpoint you choose, or without any LLM at all.
 
 - Zero dependencies: Node.js ≥ 22.13 built-ins only (`node:sqlite` with FTS5).
 - One SQLite file in `~/.claude-open-mem/`, or one shared server for all your machines.
@@ -21,8 +17,7 @@ OpenAI-compatible endpoint you choose, or without any LLM at all.
 
 ## Install
 
-Requirements: Claude Code, Node.js ≥ 22.13 on `PATH`. Optional: Ollama with a chat model
-(`ollama pull gemma3:12b`, or `gemma3:4b` / `qwen3:8b` on smaller GPUs).
+Requirements: Claude Code, Node.js ≥ 22.13 on `PATH`. Optional: Ollama with a chat model (`ollama pull gemma3:12b`, or `gemma3:4b` / `qwen3:8b` on smaller GPUs).
 
 ```bash
 claude plugin marketplace add Noel18101987/claude-open-mem
@@ -33,8 +28,7 @@ claude plugin install open-mem@claude-open-mem
 Restart Claude Code. On the first session start claude-open-mem:
 
 1. creates `~/.claude-open-mem/` with `settings.json` and `open-mem.db`;
-2. generates a random **web admin token and shows it once** in the session — save it in your password manager
-   (only its SHA-256 hash is stored);
+2. generates a random **web admin token and shows it once** in the session — save it in your password manager (only its SHA-256 hash is stored);
 3. starts the web viewer on <http://127.0.0.1:37800>;
 4. imports your claude-mem database in the background if it finds one (`~/.claude-mem/claude-mem.db`);
 5. starts injecting memory for the current project.
@@ -50,22 +44,13 @@ The plugin id is `open-mem` (Claude Code reserves plugin names that start with `
 | `PostToolUse` | Queues the tool call. No network, returns immediately. |
 | `Stop` | Queues a summary of the turn. |
 
-A detached background process drains the queue: the LLM decides whether a tool call is worth remembering and writes
-a structured observation (title, narrative, facts, concepts, files). At the end of each turn it writes a summary, and
-every `briefEvery` new records it rewrites the project brief. If the LLM is unreachable, items wait in the queue.
+A detached background process drains the queue: the LLM decides whether a tool call is worth remembering and writes a structured observation (title, narrative, facts, concepts, files). At the end of each turn it writes a summary, and every `briefEvery` new records it rewrites the project brief. If the LLM is unreachable, items wait in the queue.
 
-**Gaming:** a local model and a game fight over the same GPU. While a game runs (anything under Steam, Epic, Xbox,
-EA, GOG, Riot or Ubisoft game folders, plus whatever you list in `busyProcesses`), the queue waits and the Ollama
-models are unloaded; it drains once the game closes. `node "$OM" busy` shows what is detected.
+**Gaming:** a local model and a game fight over the same GPU. While a game runs (anything under Steam, Epic, Xbox, EA, GOG, Riot or Ubisoft game folders, plus whatever you list in `busyProcesses`), the queue waits and the Ollama models are unloaded; it drains once the game closes. `node "$OM" busy` shows what is detected.
 
-**Semantic search:** after each drain, new records get an embedding from Ollama (`embedModel`, default
-`embeddinggemma`; `ollama pull embeddinggemma`). Searches merge full-text and vector results, so a search finds
-records that say the same thing in other words. Without the model, during a game, or when Ollama is down, search is
-full-text only.
+**Semantic search:** after each drain, new records get an embedding from Ollama (`embedModel`, default `embeddinggemma`; `ollama pull embeddinggemma`). Searches merge full-text and vector results, so a search finds records that say the same thing in other words. Without the model, during a game, or when Ollama is down, search is full-text only.
 
-**Notes review:** when a project's notes change, the LLM checks them for contradictions, outdated facts and
-duplicates (at most every `notesReviewHours`). Its findings appear at session start and on the project page; nothing
-is changed automatically.
+**Notes review:** when a project's notes change, the LLM checks them for contradictions, outdated facts and duplicates (at most every `notesReviewHours`). Its findings appear at session start and on the project page; nothing is changed automatically.
 
 ### Tools Claude gets (MCP)
 
@@ -97,9 +82,7 @@ Every list is paged on the server (numbered pages, the page lives in the URL, so
 
 The layout adapts from a phone (menu behind a button, stacked tables) to a wide screen. English or Spanish (follows the browser language until you pick one) and an automatic, light or dark theme: both selectors sit at the bottom of the side menu and on the login page, remembered per browser. No framework and no build step: plain ES modules, served gzipped.
 
-Security: HttpOnly + SameSite=Strict session cookie (30 days), origin check on writes, strict CSP, login rate limit.
-Lost the token? `cli token reset` prints a new one and logs every browser out. To reach it from other devices,
-put it behind an HTTPS reverse proxy rather than exposing the port.
+Security: HttpOnly + SameSite=Strict session cookie (30 days), origin check on writes, strict CSP, login rate limit. Lost the token? `cli token reset` prints a new one and logs every browser out. To reach it from other devices, put it behind an HTTPS reverse proxy rather than exposing the port.
 
 ## Sharing memory between machines
 
@@ -114,9 +97,7 @@ node "$OM" device add laptop              # prints a device key once
 node "$OM" remote connect --url http://server:37800 --name laptop < keyfile
 ```
 
-Clients keep writing to their own database (an outbox), compress with their own LLM, and push new rows after each
-drain. Reads, notes and tasks go to the server; if it is unreachable they fall back to the local copy and sync later.
-`remote disconnect` returns to local mode.
+Clients keep writing to their own database (an outbox), compress with their own LLM, and push new rows after each drain. Reads, notes and tasks go to the server; if it is unreachable they fall back to the local copy and sync later. `remote disconnect` returns to local mode.
 
 ## LLM providers
 
@@ -150,17 +131,14 @@ Inside Claude Code you can also ask Claude to use the `open-mem` skill.
 ## Privacy
 
 - Everything stays in `~/.claude-open-mem/` unless you point `provider` at a remote endpoint or connect a server.
-- Secrets are redacted before anything is queued, stored, synced or sent to the LLM: API keys (Anthropic, OpenAI,
-  OpenRouter, GitHub, GitLab, AWS, Google, Slack, Stripe, Telegram, Context7), JWTs, bearer tokens, private keys,
-  `user:pass@` in URLs and `password=` / `token:`-style assignments. The server redacts again on ingest.
+- Secrets are redacted before anything is queued, stored, synced or sent to the LLM: API keys (Anthropic, OpenAI, OpenRouter, GitHub, GitLab, AWS, Google, Slack, Stripe, Telegram, Context7), JWTs, bearer tokens, private keys, `user:pass@` in URLs and `password=` / `token:`-style assignments. The server redacts again on ingest.
 - Wrap anything in `<private>…</private>` in a prompt to keep it out of memory.
 - `settings.json` (which can hold a device key) is written with mode 600; tokens and keys are stored only as hashes.
 - `node "$OM" redact` re-scans stored memory (useful after upgrading redaction patterns).
 
 ## Migrating from claude-mem
 
-The import is automatic and incremental: while both are installed, every session start copies new claude-mem rows.
-The claude-mem database is opened read-only and never modified.
+The import is automatic and incremental: while both are installed, every session start copies new claude-mem rows. The claude-mem database is opened read-only and never modified.
 
 ```bash
 node "$OM" uninstall-claude-mem --dry-run         # preview
