@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export const VERSION = '0.5.3';
+export const VERSION = '0.5.5';
 
 export const DEFAULT_SETTINGS = {
   // auto: use a local Ollama if reachable, otherwise store without an LLM.
@@ -57,6 +57,11 @@ export const DEFAULT_SETTINGS = {
   wakeBroadcast: '255.255.255.255',
   wakeOffMinutes: 10,
   wakeOffCommand: '',
+  // Machine with the GPU, when a shared server uses it: `cli guard` lets the addresses in guardAllow reach this Ollama on
+  // guardPort, and closes the door and frees the GPU while a game runs. Checked every guardPollSeconds while in use.
+  guardAllow: [],
+  guardPort: 11435,
+  guardPollSeconds: 10,
   excludedProjects: [],
   // Import new rows from an existing claude-mem database at session start.
   autoImportClaudeMem: true,

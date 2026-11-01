@@ -12,6 +12,7 @@ import { drain, drainerPid, generateBrief, reviewNotes, spawnDrainer } from './q
 import { withRecorder } from './llmstats.mjs';
 import { call } from './backend.mjs';
 import { exportFileName, itemsMarkdown } from './export.mjs';
+import { startGuard } from './guard.mjs';
 import { serve } from './server.mjs';
 import { formatIndex, redactExisting, stats } from './store.mjs';
 import { pushPending, remoteFetch } from './sync.mjs';
@@ -47,6 +48,7 @@ Web viewer and shared mode
                                  Client: use a shared server (device key read from standard input)
   remote disconnect              Client: back to this machine's local database
   sync                           Client: push unsynced records to the server now
+  guard [--quiet]                Machine with the GPU: let a server reach this Ollama, freeing the GPU while a game runs
 Data: ${dataDir()}`;
 
 function flag(args, name) {
@@ -89,6 +91,7 @@ async function main() {
     const shown = { ...settings, apiKey: settings.apiKey ? '***' : '', deviceKey: settings.deviceKey ? '***' : '' };
     return console.log(JSON.stringify(shown, null, 2));
   }
+  if (cmd === 'guard') return guardCmd(settings, args);
 
   const db = openDb();
   let keepOpen = false;
@@ -238,6 +241,21 @@ async function serveCmd(db, settings, args) {
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
   return true;
+}
+
+async function guardCmd(settings, args) {
+  const quiet = flag(args, '--quiet');
+  if (!settings.guardAllow.length) throw new Error('set the server address first: config set guardAllow <ip>');
+  try {
+    await startGuard(settings, { reload: loadSettings });
+  } catch (err) {
+    if (err.code === 'EADDRINUSE' && quiet) return; // autostart: another instance already guards
+    throw err;
+  }
+  fs.writeFileSync(dataPath('guard.pid'), String(process.pid));
+  const msg = `gpu guard on port ${settings.guardPort} for ${settings.guardAllow.join(', ')}`;
+  log('info', msg);
+  if (!quiet) console.log(msg);
 }
 
 function deviceCmd(db, args) {

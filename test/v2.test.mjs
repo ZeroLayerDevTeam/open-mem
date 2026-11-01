@@ -80,6 +80,23 @@ test('prompt recall needs two informative words and skips already injected recor
   db.close();
 });
 
+test('full-text search with a project or date filter is driven by the FTS index, not a table index', () => {
+  const db = openDb();
+  const seen = [];
+  // Records every search statement with its parameters, then plans it.
+  const spy = { prepare: (sql) => { const st = db.prepare(sql); return { all: (...p) => { seen.push({ sql, p }); return st.all(...p); }, get: (...p) => st.get(...p) }; } };
+  store.recall(spy, { prompt: 'certificados nginx caducados', project: 'WEB' });
+  store.search(spy, { query: 'certificados nginx', project: 'web', dateStart: '2020-01-01', dateEnd: '2999-12-31' });
+  assert.ok(seen.length >= 3);
+  for (const { sql, p } of seen) {
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...p).map((r) => r.detail).join('\n');
+    // An index as the outer loop runs the MATCH once per row of the project: ~20 s on a real 50k-record memory.
+    assert.doesNotMatch(plan, /USING (COVERING )?INDEX (obs|sum|items)_/, plan);
+  }
+  assert.ok(store.recall(db, { prompt: 'certificados nginx caducados', project: 'WEB' }).length, 'project match stays case-insensitive');
+  db.close();
+});
+
 test('auth: admin token once, hashed; device keys; sessions', () => {
   const db = openDb(path.join(TMP, 'auth.db'));
   const token = auth.createAdminToken(db);
