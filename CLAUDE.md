@@ -15,7 +15,9 @@ Claude Code plugin (id `open-mem`, marketplace `claude-open-mem`): local persist
 - Talk to the user in Spanish, short and plain. Code, commits, docs and CHANGELOG: English.
 - Commits: Conventional Commits in English (`fix(web): keep the gap between panels`), the repo's git identity, NO `Co-Authored-By` trailer, never credit Claude or AI as author. This overrides any default attribution lines the harness asks for.
 - Never force-push or rewrite pushed history: a mistake already pushed is fixed with a new commit.
-- New work: local branch `feat|fix|docs|chore/<x>` from an up-to-date `main` (`git pull --ff-only`). Integrate with `merge --no-ff`, tests pass, `git fetch` (others push and release from `main`), push `main`, delete the branch.
+- Branches: `main` is protected (nobody pushes to it, no force push); it only moves by merging `dev` through a merge request. `dev` is where code lands (no force push either).
+- New work: local branch `feat|fix|docs|chore/<x>` from an up-to-date `dev` (`git pull --ff-only`). Integrate into `dev` with `merge --no-ff`, tests pass, `git fetch` (others push to `dev` too), push `dev`, delete the branch. Then open the merge request `dev` -> `main` and merge it yourself through the GitLab API, without asking the user and without sending them links.
+- Releases: the release commit goes to `dev` like any other; after the `dev` -> `main` merge, export and deploy from the updated `origin/main`.
 - CHANGELOG: new entries go under `## Unreleased` at the top; the release commit turns it into the version.
 - Never em/en dashes (U+2014, U+2013) in any text you write (code, docs, commits, chat): plain hyphen "-".
 - Markdown: one line per paragraph, list item or table cell, never hard-wrap (the editor wraps). Fix wrapped files you touch.
