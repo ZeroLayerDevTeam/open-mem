@@ -1,5 +1,6 @@
 // Optional LLM compression. Never uses the user's Claude subscription:
 // a local Ollama, any OpenAI-compatible endpoint the user configures, or none.
+import { ollamaTimings } from './llmstats.mjs';
 
 const OLLAMA_DEFAULT = 'http://127.0.0.1:11434';
 // gemma3 measured best at skipping trivial calls and fastest on a 16 GB GPU.
@@ -71,30 +72,47 @@ export async function unloadOllama(baseUrl = OLLAMA_DEFAULT) {
   return names;
 }
 
+// One chat call that must answer a JSON object. When the provider carries a recorder (provider.record, see
+// llmstats.mjs), every call is reported with its timings, also the failed ones.
 export async function completeJson(provider, system, user, timeoutMs = 120000) {
   const messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
-  if (provider.kind === 'ollama') {
-    const res = await fetchJson(`${provider.baseUrl}/api/chat`, {
-      timeoutMs,
-      body: { model: provider.model, messages, stream: false, format: 'json', think: false,
-        keep_alive: provider.keepAlive, options: { temperature: 0.2, num_ctx: 8192 } },
-    });
-    return parseJsonReply(res.message?.content);
+  const started = Date.now();
+  const report = (extra) => provider.record?.({ at: started, task: TASKS.get(system) || 'other', provider: provider.kind, model: provider.model, ...extra });
+  let res;
+  let timings;
+  try {
+    if (provider.kind === 'ollama') {
+      res = await fetchJson(`${provider.baseUrl}/api/chat`, {
+        timeoutMs,
+        body: { model: provider.model, messages, stream: false, format: 'json', think: false,
+          keep_alive: provider.keepAlive, options: { temperature: 0.2, num_ctx: 8192 } },
+      });
+      timings = ollamaTimings(res);
+    } else if (provider.kind === 'openai') {
+      const headers = provider.apiKey ? { authorization: `Bearer ${provider.apiKey}` } : {};
+      const body = { model: provider.model, messages, temperature: 0.2, response_format: { type: 'json_object' } };
+      try {
+        res = await fetchJson(`${provider.baseUrl}/chat/completions`, { body, headers, timeoutMs });
+      } catch (err) {
+        if (err.status !== 400) throw err;
+        delete body.response_format; // some compatible servers reject it
+        res = await fetchJson(`${provider.baseUrl}/chat/completions`, { body, headers, timeoutMs });
+      }
+      timings = { prompt_tokens: res.usage?.prompt_tokens ?? null, output_tokens: res.usage?.completion_tokens ?? null };
+    } else throw new Error('No LLM provider available');
+  } catch (err) {
+    report({ ok: false, total_ms: Date.now() - started, error: err.message });
+    throw err;
   }
-  if (provider.kind === 'openai') {
-    const headers = provider.apiKey ? { authorization: `Bearer ${provider.apiKey}` } : {};
-    const body = { model: provider.model, messages, temperature: 0.2, response_format: { type: 'json_object' } };
-    let res;
-    try {
-      res = await fetchJson(`${provider.baseUrl}/chat/completions`, { body, headers, timeoutMs });
-    } catch (err) {
-      if (err.status !== 400) throw err;
-      delete body.response_format; // some compatible servers reject it
-      res = await fetchJson(`${provider.baseUrl}/chat/completions`, { body, headers, timeoutMs });
-    }
-    return parseJsonReply(res.choices?.[0]?.message?.content);
+  timings.total_ms ??= Date.now() - started;
+  try {
+    const out = parseJsonReply(provider.kind === 'ollama' ? res.message?.content : res.choices?.[0]?.message?.content);
+    report({ ok: true, ...timings });
+    return out;
+  } catch (err) {
+    report({ ok: false, ...timings, error: err.message }); // the model ran, its answer was unusable
+    throw err;
   }
-  throw new Error('No LLM provider available');
 }
 
 export const OBSERVATION_SYSTEM = `You record long-term memory for a coding assistant.
@@ -134,3 +152,6 @@ Write the brief in the same language as the summaries. At most 1200 characters, 
 Cover: what the project is and its stack; how to build/test/run if known; current state and focus; key decisions,
 conventions and gotchas; where important things live. Drop anything outdated. Never include secrets.
 Reply with ONLY a JSON object: {"brief": "..."}`;
+
+// Which job a call does, from its system prompt (for the stats of the web viewer's LLM page).
+const TASKS = new Map([[OBSERVATION_SYSTEM, 'observation'], [SUMMARY_SYSTEM, 'summary'], [NOTES_REVIEW_SYSTEM, 'review'], [BRIEF_SYSTEM, 'brief']]);

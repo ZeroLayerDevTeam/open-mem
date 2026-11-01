@@ -9,6 +9,10 @@
 - New read routes: `/api/facets` (filter menus), `/api/items` (paged notes and tasks with full-text filter), `/api/find` (paged search); `/api/feed` and `/api/sessions` now page by number.
 - Speed: schema v4 adds indexes for sessions, the timeline and machines (the machines list went from 180 ms to 6 ms on a 48k-record database); timeline pages read only (kind, id, time) before loading the page's rows (about 5 ms for any page); JSON and static files over 1 KB are gzipped.
 
+- Web: **Local LLM** page (`#/llm`, refreshes every 5 s while visible). State of the compression model (working, ready, paused for a game, not answering), models in Ollama's memory with their GPU share and when they are freed, GPU memory, load, temperature and power from `nvidia-smi`, generation speed and calls per hour or day over 24 hours, 7 days or 30 days (HTML column charts with tooltips and a table view), the queue (next items with their tool and file or command, failed items with the error), installed models, semantic index coverage and the latest 25 calls with tokens, speed, load time and duration.
+- Actions on that page (admin only): process the queue now, also while a game runs (`cli drain --force`); retry failed items; load the chat model (kept 10 minutes) or free Ollama's memory; pin the chat model (`settings.model`, or back to automatic); index every record for semantic search (`cli embed --all` in the background). Routes: `GET /api/engine?hours=24|168|720`, `POST /api/engine/drain|retry|load|unload|model|embed`.
+- Every LLM call is measured: schema v5 adds `llm_calls` (task, model, ok, tokens in and out, load, prompt, generation and total time, error), filled by `completeJson` and by each embedding batch, pruned after 30 days. Calls whose reply is not JSON are recorded as failed with their timings.
+
 ## 0.4.0
 
 - Web viewer in English and Spanish (`web/i18n.js`): follows the browser language until one is picked; dates and

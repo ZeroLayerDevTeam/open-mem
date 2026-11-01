@@ -32,7 +32,7 @@ test('every literal UI string of the web viewer has a Spanish translation', asyn
     keys.add(s);
   const html = read('index.html');
   for (const m of html.matchAll(/data-i18n(?:-html|-aria)?="([^"]+)"/g)) keys.add(unescape(m[1]));
-  const missing = [...keys].filter((k) => t(k) === k && !['Commit', 'Prompt', 'prompts', 'Normal', '{n} prompts', '{n} min', '{h} h {m} min'].includes(k));
+  const missing = [...keys].filter((k) => t(k) === k && !['Commit', 'Prompt', 'prompts', 'Normal', '{n} prompts', '{n} min', '{h} h {m} min', 'GPU', 'Total'].includes(k));
   assert.deepEqual(missing, []);
   assert.ok(keys.size > 100, `only ${keys.size} keys found: the scan is broken`);
 });

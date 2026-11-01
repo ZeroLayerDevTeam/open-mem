@@ -8,7 +8,8 @@ user's Claude subscription (that was claude-mem's limit: it spends the 5-hour qu
 - `src/hook.mjs` hooks (enqueue + context/recall) · `src/queue.mjs` background drainer (`drain.lock`), briefs, sync ·
   `src/store.mjs` records, search, recall, session context · `src/items.mjs` notes/tasks + history ·
   `src/views.mjs` web read models (paged: `{ rows, total, page, pageSize }`; sessions built from records, cached) ·
-  `src/server.mjs` HTTP API + web (`web/`: `app.js` pages, `ui.js` helpers, `i18n.js`; no build step) · `src/auth.mjs` admin token, device keys,
+  `src/server.mjs` HTTP API + web (`web/`: `app.js` pages, `ui.js` helpers, `i18n.js`; no build step) ·
+  `src/llmstats.mjs` per-call LLM metrics (`llm_calls`) · `src/engine.mjs` LLM page status + actions · `src/auth.mjs` admin token, device keys,
   web sessions · `src/sync.mjs` client push / server ingest · `src/backend.mjs` local vs remote with fallback ·
   `src/mcp-server.mjs` hand-written MCP stdio · `src/claudemem.mjs` import + uninstall · `src/cli.mjs` ·
   `src/semantic.mjs` Ollama embeddings + hybrid search (RRF over FTS and vectors) · `src/export.mjs` Markdown export.
@@ -34,5 +35,6 @@ user's Claude subscription (that was claude-mem's limit: it spends the 5-hour qu
   `${CLAUDE_PLUGIN_ROOT}` and it fails (`CONNECTION_CLOSED`). The MCP server is declared in `plugin.json` → `mcpServers`.
 - `items.kind` (note/task) is not the record `kind` (obs/sum/item): records expose it as `item_kind`.
 - MCP tool calls are async: replies can arrive out of order — tests sort by id.
+- `node:sqlite` binds JS numbers as REAL: `(at - ?) / ?` is a fraction, wrap bucket math in `CAST(... AS INTEGER)`.
 - Never print or paste the admin token / device keys in a transcript: pipe `device add --raw` into `remote connect`,
   and let the user run `token init|reset` themselves.

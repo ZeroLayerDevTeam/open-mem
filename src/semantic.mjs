@@ -2,6 +2,7 @@
 // Vectors are cut to DIM dimensions and normalized (embeddinggemma is trained for that), so a dot product is the
 // cosine and the whole database fits in memory. Without an Ollama with the embedding model, search stays full-text.
 import { getMeta } from './db.mjs';
+import { ollamaTimings, recordCall } from './llmstats.mjs';
 import { clip, normalizeSearch, refId, search } from './store.mjs';
 
 export const DIM = 256;
@@ -23,20 +24,32 @@ export function toVector(values) {
   return v;
 }
 
-export async function embed(settings, texts, timeoutMs = 120000) {
-  const res = await fetch(`${baseUrl(settings)}/api/embed`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model: settings.embedModel, input: texts, keep_alive: settings.llmKeepAlive || undefined, truncate: true }),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    const err = new Error(`HTTP ${res.status} from Ollama embed: ${text.slice(0, 200)}`);
-    err.status = res.status;
+// `record` (optional) receives the call's timings, as llmstats.recordCall expects them.
+export async function embed(settings, texts, timeoutMs = 120000, record = null) {
+  const started = Date.now();
+  const report = (extra) => record?.({ at: started, task: 'embed', provider: 'ollama', model: settings.embedModel, items: texts.length, ...extra });
+  let body;
+  try {
+    const res = await fetch(`${baseUrl(settings)}/api/embed`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: settings.embedModel, input: texts, keep_alive: settings.llmKeepAlive || undefined, truncate: true }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      const err = new Error(`HTTP ${res.status} from Ollama embed: ${text.slice(0, 200)}`);
+      err.status = res.status;
+      throw err;
+    }
+    body = JSON.parse(text);
+  } catch (err) {
+    report({ ok: false, total_ms: Date.now() - started, error: err.message });
     throw err;
   }
-  return JSON.parse(text).embeddings.map(toVector);
+  const t = ollamaTimings(body);
+  report({ ok: true, ...t, total_ms: t.total_ms ?? Date.now() - started });
+  return body.embeddings.map(toVector);
 }
 
 // --- what gets embedded -------------------------------------------------------------------------
@@ -74,7 +87,7 @@ export async function embedPending(db, settings, { max = 2000, batch = 32, stop 
   while (done < max) {
     const rows = pendingEmbeddings(db, Math.min(batch, max - done));
     if (!rows.length) break;
-    const vecs = await embed(settings, rows.map((r) => clip(r.text, 2000)));
+    const vecs = await embed(settings, rows.map((r) => clip(r.text, 2000)), 120000, (s) => recordCall(db, s));
     db.exec('BEGIN IMMEDIATE');
     try {
       rows.forEach((r, i) => insert.run(refId(r), settings.embedModel, Buffer.from(vecs[i].buffer), Date.now()));
