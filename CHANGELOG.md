@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.2
 
 - Local LLM page on a server without an NVIDIA GPU (Ollama on another machine, reached through a tunnel): the machine that runs Ollama sends its GPU (memory, load, temperature, power) after each queue run, at most once a minute (`POST /api/gpu`, device key only). The GPU panel shows it with the machine name and its age, and a note below says the GPU is on that other machine. Reports older than a week are dropped. The nvidia-smi code moved to `src/gpu.mjs`.
 
