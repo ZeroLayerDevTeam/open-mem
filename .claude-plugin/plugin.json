@@ -1,6 +1,6 @@
 {
   "name": "open-mem",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "description": "Open, local-first persistent memory for Claude Code. Compresses sessions with a local LLM (Ollama) or none — never your Claude plan. Imports claude-mem history automatically.",
   "author": {
     "name": "claude-open-mem contributors"
