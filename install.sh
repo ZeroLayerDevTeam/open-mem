@@ -2,9 +2,9 @@
 # claude-open-mem installer for Linux and macOS.
 # Checks Node.js and Claude Code, adds the marketplace, checks the GPU BEFORE installing the plugin (asks when
 # there is none), installs the plugin, then runs `setup` (Ollama + the model that fits the GPU; it asks first).
-# Usage: curl -fsSL https://raw.githubusercontent.com/Noel18101987/claude-open-mem/main/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/ZeroLayerDevTeam/open-mem/main/install.sh | sh
 set -eu
-MARKETPLACE=Noel18101987/claude-open-mem
+MARKETPLACE=ZeroLayerDevTeam/open-mem
 
 fail() { printf '%s\n' "$1" >&2; exit 1; }
 # Questions read the terminal, so they also work when the script comes through a pipe.

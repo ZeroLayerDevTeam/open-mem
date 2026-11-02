@@ -23,26 +23,25 @@ The installer checks your GPU before installing anything, tells you when there i
 
 ```powershell
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/Noel18101987/claude-open-mem/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/ZeroLayerDevTeam/open-mem/main/install.ps1 | iex
 ```
 
 ```bash
 # Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/Noel18101987/claude-open-mem/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ZeroLayerDevTeam/open-mem/main/install.sh | sh
 ```
 
 Or by hand:
 
 ```bash
-claude plugin marketplace add Noel18101987/claude-open-mem
-# or from the GitLab mirror: claude plugin marketplace add https://gitlab.com/noelcheda/claude-open-mem.git
+claude plugin marketplace add ZeroLayerDevTeam/open-mem
 claude plugin install open-mem@claude-open-mem
 ```
 
 Restart Claude Code. On the first session start claude-open-mem:
 
 1. creates `~/.claude-open-mem/` with `settings.json` and `open-mem.db`;
-2. generates a random **web admin token and shows it once** in the session — save it in your password manager (only its SHA-256 hash is stored);
+2. generates a random **web admin token and shows it once** in the session: save it in your password manager (only its SHA-256 hash is stored);
 3. starts the web viewer on <http://127.0.0.1:37800>;
 4. imports your claude-mem database in the background if it finds one (`~/.claude-mem/claude-mem.db`);
 5. starts injecting memory for the current project.

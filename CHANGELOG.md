@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- README and the installers (`install.ps1`, `install.sh`) install from the new GitHub repo `ZeroLayerDevTeam/open-mem`; the GitLab mirror is gone.
+
 ## 0.7.1
 
 - A scheduled drain of `serve` that outlasted `serveDrainMinutes` no longer overlaps with the next one: `serve` drains inside its own process and the lock took its own pid for a dead process, so the next tick stole it and repeated the LLM work on the same GPU.

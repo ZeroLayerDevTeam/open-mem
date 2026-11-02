@@ -1,9 +1,9 @@
 # claude-open-mem installer for Windows (PowerShell 5.1+).
 # Checks Node.js and Claude Code, adds the marketplace, checks the GPU BEFORE installing the plugin (asks when
 # there is none), installs the plugin, then runs `setup` (Ollama + the model that fits the GPU; it asks first).
-# Usage: irm https://raw.githubusercontent.com/Noel18101987/claude-open-mem/main/install.ps1 | iex
+# Usage: irm https://raw.githubusercontent.com/ZeroLayerDevTeam/open-mem/main/install.ps1 | iex
 $ErrorActionPreference = 'Stop'
-$Marketplace = 'Noel18101987/claude-open-mem'
+$Marketplace = 'ZeroLayerDevTeam/open-mem'
 
 function Fail($msg) { Write-Host $msg -ForegroundColor Red; exit 1 }
 
