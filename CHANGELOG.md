@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- README and the installers (`install.ps1`, `install.sh`) install from the new GitHub repo `ZeroLayerDevTeam/open-mem`; the GitLab mirror is gone.
+- README and the installers (`install.ps1`, `install.sh`) install from the new GitHub repo `ZeroLayerDevTeam/open-mem`.
 
 ## 0.7.1
 
