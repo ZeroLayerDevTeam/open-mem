@@ -3,6 +3,7 @@
 ## Unreleased
 
 - README and the installers (`install.ps1`, `install.sh`) install from the new GitHub repo `ZeroLayerDevTeam/open-mem`; the GitLab mirror is gone.
+- README explains that a project is the name of the folder Claude Code runs in, so memory is shared between folders with the same name.
 
 ## 0.7.1
 
