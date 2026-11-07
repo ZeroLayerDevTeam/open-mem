@@ -49,7 +49,8 @@ export async function resolveProvider(settings) {
     if (model) return { kind: 'ollama', model, baseUrl, keepAlive: settings.llmKeepAlive || undefined };
     return { kind: 'none', reason: `Ollama at ${baseUrl} has no chat model (run: ollama pull qwen3:8b)` };
   } catch (err) {
-    return { kind: 'none', unreachable: true, reason: `Ollama not reachable at ${baseUrl} (${err.message})` };
+    // refused: nothing listens there (Ollama is not running). A timeout means it runs but is busy.
+    return { kind: 'none', unreachable: true, refused: err.cause?.code === 'ECONNREFUSED', reason: `Ollama not reachable at ${baseUrl} (${err.message})` };
   }
 }
 

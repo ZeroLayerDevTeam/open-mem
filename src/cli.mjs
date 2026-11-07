@@ -9,7 +9,7 @@ import { claudeMemDbPath, installedPluginIds, importClaudeMem, uninstallClaudeMe
 import { busyReason } from './busy.mjs';
 import { clearPause, setPause } from './budget.mjs';
 import { ownModels, resolveProvider, unloadOllama } from './llm.mjs';
-import { drain, drainerPid, findLessons, generateBrief, queueState, reviewNotes, spawnDrainer } from './queue.mjs';
+import { drain, drainerPid, endPause, findLessons, generateBrief, queueState, reviewNotes, spawnDrainer } from './queue.mjs';
 import { withRecorder } from './llmstats.mjs';
 import { call } from './backend.mjs';
 import { exportFileName, itemsMarkdown } from './export.mjs';
@@ -157,9 +157,12 @@ async function main() {
       console.log(`paused${p.until ? ` until ${new Date(p.until).toLocaleString()}` : ' until `resume`'}`);
     } else if (cmd === 'resume') {
       const had = clearPause();
-      if (had) log('info', 'queue resumed by hand');
       console.log(had ? 'resumed' : 'not paused');
-      if (had) spawnDrainer();
+      if (had) {
+        log('info', 'queue resumed by hand');
+        endPause(db); // drainers reuse a recent pause: forget it now
+        spawnDrainer();
+      }
     } else if (cmd === 'busy') {
       const reason = await busyReason(settings);
       let unloaded = [];

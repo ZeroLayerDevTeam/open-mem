@@ -372,7 +372,7 @@ function notePause(db, pause, now = Date.now()) {
   logOnce(db, 'pause_logged', pause.kind, `drain paused (${pause.kind}: ${pause.detail}), ${pendingCount(db)} queue item(s) waiting`);
 }
 
-function endPause(db) {
+export function endPause(db) {
   if (!getMeta(db, 'pause')) return;
   setMeta(db, 'pause', '');
   setMeta(db, 'pause_logged', '');
@@ -463,7 +463,8 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
   };
   try {
     let provider = withRecorder(db, forced || await resolveProvider(settings));
-    if (!forced && provider.unreachable && await autostartOllama(db, settings, start)) provider = withRecorder(db, await resolveProvider(settings));
+    // Only when nothing listens: an Ollama too busy to answer in time (a model loading for another app) is left alone.
+    if (!forced && provider.refused && await autostartOllama(db, settings, start)) provider = withRecorder(db, await resolveProvider(settings));
     const local = provider.kind === 'ollama';
     let held = false;
     if (provider.kind !== 'none') {
@@ -499,7 +500,7 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
       return plan(settings, { baseUrl: provider.baseUrl, model: main, embed, backlog: pendingCount(db) });
     };
     const recent = local && !force ? currentPause(db) : null;
-    let pause = recent && recent.kind !== 'manual' && Date.now() - recent.at < PAUSE_REUSE_MS ? recent : null;
+    let pause = recent && Date.now() - recent.at < PAUSE_REUSE_MS ? recent : null;
     let pushedAt = Date.now();
     while (!held && !pause) {
       const g = await gate();

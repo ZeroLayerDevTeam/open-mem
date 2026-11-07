@@ -216,9 +216,22 @@ test('a local Ollama that does not answer is started, at most every 10 minutes',
     setMeta(db, 'llm_seen_at', Date.now());
     let starts = 0;
     const start = async () => { starts++; return null; };
-    const settings = { ...BASE, ollamaAutostart: true, provider: 'auto', baseUrl: 'http://127.0.0.1:9' };
+    // A port nothing listens on: connection refused, Ollama is not running.
+    const probe = http.createServer();
+    await new Promise((r) => { probe.listen(0, '127.0.0.1', r); });
+    const closed = probe.address().port;
+    await new Promise((r) => { probe.close(r); });
+    const settings = { ...BASE, ollamaAutostart: true, provider: 'auto', baseUrl: `http://127.0.0.1:${closed}` };
     await queue.drain(db, settings, { lock: false, sync: false, start });
     await queue.drain(db, settings, { lock: false, sync: false, start });
+    assert.equal(starts, 1);
+    // An Ollama that runs but does not answer in time (busy loading another app's model) is left alone.
+    setMeta(db, 'ollama_start_at', 0);
+    const slow = http.createServer(() => { /* never answers */ });
+    await new Promise((r) => { slow.listen(0, '127.0.0.1', r); });
+    try {
+      await queue.drain(db, { ...settings, baseUrl: `http://127.0.0.1:${slow.address().port}` }, { lock: false, sync: false, start });
+    } finally { slow.closeAllConnections(); slow.close(); }
     assert.equal(starts, 1);
     // Never one on another machine.
     setMeta(db, 'ollama_start_at', 0);

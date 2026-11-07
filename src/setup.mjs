@@ -106,11 +106,24 @@ export async function ensureRunning(binary, baseUrl = OLLAMA_URL, waitMs = 30000
   return false;
 }
 
+// The user's OLLAMA_* variables from the registry (HKCU\Environment): a process started before they were set (a
+// hook's child) does not have them, and an Ollama started without them would lose its limits.
+export function parseUserEnv(regOutput) {
+  const vars = {};
+  for (const m of String(regOutput).matchAll(/^\s+(OLLAMA_\w+)\s+REG_(?:EXPAND_)?SZ\s+(.*?)\s*$/gm)) vars[m[1]] = m[2];
+  return vars;
+}
+const userOllamaEnv = () => new Promise((resolve) => {
+  execFile('reg', ['query', 'HKCU\\Environment'], { windowsHide: true, timeout: 3000 }, (err, stdout) => resolve(err ? {} : parseUserEnv(stdout)));
+});
+
 // Starts an installed Ollama that is not running, the way a login would. Returns how, or null when it cannot.
 // Windows: the tray app through explorer.exe, so it gets the user's current environment (OLLAMA_* variables set
-// after this process started included). macOS: the app. Linux runs Ollama as a system service: not ours to start.
+// after this process started included); without the app, `ollama serve` with the user's OLLAMA_* variables.
+// macOS: the app. Linux runs Ollama as a system service: not ours to start. Never call it while Ollama listens.
 export async function startOllama(platform = process.platform, env = process.env) {
-  const launch = (cmd, args) => spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true }).on('error', () => {}).unref();
+  const launch = (cmd, args, extra = {}) => spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true, env: { ...env, ...extra } })
+    .on('error', () => {}).unref();
   if (platform === 'win32') {
     const app = path.join(env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'Ollama', 'ollama app.exe');
     if (fs.existsSync(app)) { launch(path.join(env.SystemRoot || 'C:\\Windows', 'explorer.exe'), [app]); return app; }
@@ -121,7 +134,7 @@ export async function startOllama(platform = process.platform, env = process.env
   if (platform === 'linux') return null;
   const binary = await findOllama(platform, env);
   if (!binary) return null;
-  launch(binary, ['serve']);
+  launch(binary, ['serve'], platform === 'win32' ? await userOllamaEnv() : {});
   return `${binary} serve`;
 }
 
