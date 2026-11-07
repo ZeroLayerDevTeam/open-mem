@@ -1,6 +1,9 @@
 // Read models for the web viewer. Everything returns plain JSON-safe objects. Lists are paged:
 // { rows, total, page, pageSize } with 1-based pages.
+import { deviceName } from './config.mjs';
 import { getItem, listItems } from './items.mjs';
+import { queueState } from './queue.mjs';
+import { clientStatuses } from './sync.mjs';
 import { ftsQuery, getByRefs, lessons, notesReview, parseRef, searchCount, stats } from './store.mjs';
 import { hybridSearch } from './semantic.mjs';
 
@@ -27,7 +30,15 @@ function activity(db, { project, days = 372 } = {}) {
   return rows.map((r) => ({ day: r.d, n: r.n }));
 }
 
-export function overview(db, { mode = 'local' } = {}) {
+// Queues that wait or work: this machine's, and those the clients of a shared server report. A queue that waits shows
+// why, so a delay in the activity chart does not read as missing work.
+function queues(db, settings) {
+  const own = { device: deviceName(settings), ...queueState(db) };
+  return [own, ...clientStatuses(db).filter((c) => c.device !== own.device)].filter((q) => q.pending || q.pause || q.down);
+}
+
+export function overview(db, settings = {}) {
+  const { mode = 'local' } = settings;
   const s = stats(db);
   if (mode !== 'remote') s.unsynced = 0; // only meaningful on a client pushing to a server
   const tasks = db.prepare(`SELECT status, count(*) n FROM items WHERE kind = 'task' GROUP BY status`).all();
@@ -38,7 +49,7 @@ export function overview(db, { mode = 'local' } = {}) {
   s.sessions = sessionIndex(db).length;
   s.projects = all.length;
   return {
-    stats: s, tasks, doneWeek, devices, activity: activity(db), recentSessions: sessions(db, { pageSize: 6 }).rows,
+    stats: s, tasks, doneWeek, devices, activity: activity(db), queues: queues(db, settings), recentSessions: sessions(db, { pageSize: 6 }).rows,
     openTasks: listItems(db, { kind: 'task', open: true, limit: 8 }), projects: all.slice(0, 8),
   };
 }

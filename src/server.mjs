@@ -9,7 +9,7 @@ import { log, VERSION } from './config.mjs';
 import { local } from './backend.mjs';
 import { deleteItem, TASK_STATUSES } from './items.mjs';
 import { exportFileName, itemsMarkdown } from './export.mjs';
-import { ingest } from './sync.mjs';
+import { ingest, storeClientStatus } from './sync.mjs';
 import { gzipSync } from 'node:zlib';
 import { ENGINE_ACTIONS, engineAction, engineStatus } from './engine.mjs';
 import { storeGpuReport } from './gpu.mjs';
@@ -191,10 +191,12 @@ export function createServer(db, settings) {
       if (who.kind !== 'device') throw new HttpError(403, 'devices only');
       return send(res, 200, { ok: true, counts: ingest(db, who.device, await readBody(req, 64 * 1024 * 1024)) });
     }
-    if (route === '/api/gpu') {
+    if (route === '/api/gpu' || route === '/api/client') {
       if (who.kind !== 'device') throw new HttpError(403, 'devices only');
       try {
-        return send(res, 200, { ok: true, gpus: storeGpuReport(db, who.device, await readBody(req, 16 * 1024)) });
+        const body = await readBody(req, 16 * 1024);
+        // /api/gpu: clients before 0.8, which only sent their GPU.
+        return send(res, 200, route === '/api/gpu' ? { ok: true, gpus: storeGpuReport(db, who.device, body) } : { ok: true, status: storeClientStatus(db, who.device, body) });
       } catch (err) {
         throw err instanceof HttpError ? err : new HttpError(400, err.message);
       }

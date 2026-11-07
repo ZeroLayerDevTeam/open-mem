@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DEFAULT_SETTINGS } from '../src/config.mjs';
 import { detectGpu, isIntegrated, parseRegistryAdapters, recommendModel } from '../src/hardware.mjs';
-import { planSetup } from '../src/setup.mjs';
+import { parseUserEnv, planSetup } from '../src/setup.mjs';
 
 const KEY = 'HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}';
 
@@ -76,4 +76,11 @@ test('setup plan without a GPU: alternatives instead of an install, unless asked
   assert.deepEqual(p.steps, []);
   p = planSetup({ gpu: nvidia16, installed: null, models: null, settings: { ...s, provider: 'openai' } });
   assert.match(p.blocked, /provider is "openai"/);
+});
+
+test('an Ollama started without its app gets the user\'s OLLAMA_* variables from the registry', () => {
+  const out = '\r\nHKEY_CURRENT_USER\\Environment\r\n    Path    REG_EXPAND_SZ    C:\\x\r\n    OLLAMA_MAX_LOADED_MODELS    REG_SZ    2\r\n'
+    + '    OLLAMA_MODELS    REG_EXPAND_SZ    D:\\models dir\r\n    OLLAMA_GPU_OVERHEAD    REG_SZ    1073741824\r\n';
+  assert.deepEqual(parseUserEnv(out), { OLLAMA_MAX_LOADED_MODELS: '2', OLLAMA_MODELS: 'D:\\models dir', OLLAMA_GPU_OVERHEAD: '1073741824' });
+  assert.deepEqual(parseUserEnv(''), {});
 });

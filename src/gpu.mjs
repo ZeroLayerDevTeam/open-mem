@@ -3,7 +3,7 @@
 // server keeps the latest report per device.
 import { execFile } from 'node:child_process';
 import { win32 } from 'node:path';
-import { getMeta, setMeta } from './db.mjs';
+import { setMeta } from './db.mjs';
 
 
 // nvidia-smi, when the machine has one: memory and load per GPU. Cached for a few seconds (the page polls).
@@ -51,22 +51,10 @@ export async function gpus() {
   return value;
 }
 
-// --- reports from other machines ----------------------------------------------------------------------------------
-const REPORT_EVERY_MS = 60000;
+// --- reports from other machines (clients send them with their status, see reportStatus in sync.mjs) --------------
 const REPORT_KEEP_MS = 7 * 864e5;
 const MAX_GPUS = 8;
 const numOrNull = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
-
-// Client: after a drain, send this machine's GPU to the server (at most once a minute). Only machines that run
-// Ollama themselves report, and only when nvidia-smi answers. `send` is remoteFetch bound to the settings.
-export async function reportGpu(db, send, { now = Date.now(), read = gpus } = {}) {
-  if (now - Number(getMeta(db, 'gpu_reported_at') || 0) < REPORT_EVERY_MS) return false;
-  setMeta(db, 'gpu_reported_at', now);
-  const { list } = await read();
-  if (!list?.length) return false;
-  await send('POST', '/api/gpu', { gpus: list });
-  return true;
-}
 
 // Server: keep the latest report of a device (values checked, strings cut).
 export function storeGpuReport(db, device, body, now = Date.now()) {

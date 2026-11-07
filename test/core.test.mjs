@@ -99,7 +99,7 @@ test('queue drain without LLM keeps edits, skips reads, writes a turn summary', 
 test('queue waits for an LLM that is temporarily down instead of dropping reads', async () => {
   const db = openDb();
   db.prepare("DELETE FROM queue").run();
-  const settings = { ...DEFAULT_SETTINGS, provider: 'ollama', llmWaitHours: 72 };
+  const settings = { ...DEFAULT_SETTINGS, provider: 'ollama', llmWaitHours: 72, busyFiles: [], embedModel: '' };
   const down = { kind: 'none', unreachable: true, reason: 'Ollama not reachable' };
   const n = store.addPrompt(db, { sessionId: 's2', project: 'delta', cwd: '/x/delta', text: 'mira el log' });
   enqueue(db, 'observation', 's2', 'delta', { tool: 'Read', input: { file_path: '/x/log.txt' }, output: 'error', prompt_number: n });
@@ -115,10 +115,20 @@ test('queue waits for an LLM that is temporarily down instead of dropping reads'
   assert.equal(await drain(db, settings, { lock: false, provider: down, sync: false }), 0);
   assert.equal(db.prepare("SELECT count(*) n FROM queue WHERE status = 'pending'").get().n, 1);
 
-  // Past the wait window it is stored without the LLM.
-  db.prepare('UPDATE queue SET created_at = ?').run(Date.now() - 73 * 3600000);
+  // However old the items are: a short outage never sends a big queue through the lossy path.
+  db.prepare('UPDATE queue SET created_at = ?').run(Date.now() - 30 * 86400000);
+  assert.equal(await drain(db, settings, { lock: false, provider: down, sync: false }), 0);
+  // Gaps between drains (machine off or idle) do not count as downtime; time in use does.
+  db.prepare("UPDATE meta SET value = ? WHERE key = 'llm_down'").run(JSON.stringify({ since: Date.now() - 5 * 86400000, ms: 3600000, at: Date.now() - 4 * 86400000 }));
+  assert.equal(await drain(db, settings, { lock: false, provider: down, sync: false }), 0);
+  assert.equal(JSON.parse(db.prepare("SELECT value FROM meta WHERE key = 'llm_down'").get().value).ms, 3600000);
+  // Down for llmWaitHours while in use: the LLM is gone, the queue is stored without it.
+  db.prepare("UPDATE meta SET value = ? WHERE key = 'llm_down'").run(JSON.stringify({ since: Date.now() - 5 * 86400000, ms: 72 * 3600000, at: Date.now() - 60000 }));
   assert.equal(await drain(db, settings, { lock: false, provider: down, sync: false }), 1);
   assert.equal(db.prepare('SELECT count(*) n FROM queue').get().n, 0);
+  // The LLM answers again: downtime is forgotten.
+  await drain(db, settings, { lock: false, provider: { kind: 'ollama', model: 'x', baseUrl: 'http://127.0.0.1:9' }, sync: false });
+  assert.equal(db.prepare("SELECT value FROM meta WHERE key = 'llm_down'").get().value, '');
   db.close();
 });
 
@@ -169,16 +179,16 @@ test('busy guard: games pause the queue and keep items', async () => {
 
   const db = openDb();
   db.prepare('DELETE FROM queue').run();
-  db.prepare("DELETE FROM meta WHERE key LIKE 'busy_%'").run();
+  db.prepare("DELETE FROM meta WHERE key LIKE 'games_%' OR key LIKE 'pause%'").run();
   const n = store.addPrompt(db, { sessionId: 's3', project: 'eps', cwd: '/x/eps', text: 'lee' });
   enqueue(db, 'observation', 's3', 'eps', { tool: 'Read', input: { file_path: '/x/a.txt' }, output: 'ok', prompt_number: n });
   const ollama = { kind: 'ollama', model: 'x', baseUrl: 'http://127.0.0.1:9' };
   let calls = 0;
   const busy = async () => { calls++; return 'GTA5_Enhanced.exe'; };
-  assert.equal(await drain(db, DEFAULT_SETTINGS, { lock: false, provider: ollama, sync: false, busy }), 0);
+  assert.equal(await drain(db, { ...DEFAULT_SETTINGS, busyFiles: [], embedModel: '' }, { lock: false, provider: ollama, sync: false, busy }), 0);
   assert.equal(db.prepare("SELECT count(*) n FROM queue WHERE status = 'pending' AND attempts = 0").get().n, 1);
   // A second drain right after reuses the answer instead of listing processes again.
-  await drain(db, DEFAULT_SETTINGS, { lock: false, provider: ollama, sync: false, busy });
+  await drain(db, { ...DEFAULT_SETTINGS, busyFiles: [], embedModel: '' }, { lock: false, provider: ollama, sync: false, busy });
   assert.equal(calls, 1);
   // No local LLM involved: the guard does not apply.
   assert.equal(await drain(db, DEFAULT_SETTINGS, { lock: false, provider: { kind: 'none' }, sync: false, busy }), 1);

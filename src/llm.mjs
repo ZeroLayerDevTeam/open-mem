@@ -3,6 +3,8 @@
 import { ollamaTimings } from './llmstats.mjs';
 
 const OLLAMA_DEFAULT = 'http://127.0.0.1:11434';
+// Replies average 200-500 tokens; the prompts are clipped so that prompt + reply stay inside num_ctx (8192).
+const MAX_REPLY_TOKENS = 1536;
 // gemma3 measured best at skipping trivial calls and fastest on a 16 GB GPU.
 const PREFERRED = [/gemma/i, /qwen/i, /llama/i, /mistral/i, /phi/i];
 
@@ -47,8 +49,32 @@ export async function resolveProvider(settings) {
     if (model) return { kind: 'ollama', model, baseUrl, keepAlive: settings.llmKeepAlive || undefined };
     return { kind: 'none', reason: `Ollama at ${baseUrl} has no chat model (run: ollama pull qwen3:8b)` };
   } catch (err) {
-    return { kind: 'none', unreachable: true, reason: `Ollama not reachable at ${baseUrl} (${err.message})` };
+    // refused: nothing listens there (Ollama is not running). A timeout means it runs but is busy.
+    return { kind: 'none', unreachable: true, refused: err.cause?.code === 'ECONNREFUSED', reason: `Ollama not reachable at ${baseUrl} (${err.message})` };
   }
+}
+
+// A reply cut at the token limit ends in the middle of a value: keep the members written before the last comma
+// outside a string, and close what is still open. Returns null when nothing usable is left.
+export function salvageJson(text) {
+  const closers = [];
+  const cuts = [];
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === '\\') i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === '{' || c === '[') closers.push(c === '{' ? '}' : ']');
+    else if (c === '}' || c === ']') closers.pop();
+    else if (c === ',' && closers.length) cuts.push(text.slice(0, i) + [...closers].reverse().join(''));
+  }
+  if (!inString && closers.length) cuts.push(text + [...closers].reverse().join('')); // cut right after a whole value
+  for (const candidate of cuts.reverse()) {
+    try { return JSON.parse(candidate); } catch { /* cut further back */ }
+  }
+  return null;
 }
 
 export function parseJsonReply(text) {
@@ -57,20 +83,34 @@ export function parseJsonReply(text) {
     .replace(/```(?:json)?/gi, '');
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
-  if (start < 0 || end <= start) throw new Error(`LLM reply has no JSON object: ${cleaned.slice(0, 200)}`);
-  return JSON.parse(cleaned.slice(start, end + 1));
+  if (start >= 0 && end > start) {
+    try { return JSON.parse(cleaned.slice(start, end + 1)); } catch { /* maybe cut short: salvage below */ }
+  }
+  const salvaged = start >= 0 ? salvageJson(cleaned.slice(start)) : null;
+  if (salvaged) return salvaged;
+  throw new Error(`LLM reply has no JSON object: ${cleaned.slice(0, 200)}`);
 }
 
-// Frees the (V)RAM of every model the Ollama at baseUrl has loaded. Returns the names unloaded.
-export async function unloadOllama(baseUrl = OLLAMA_DEFAULT) {
+// Ollama names without a tag mean ":latest".
+const withTag = (name) => (String(name).includes(':') ? String(name) : `${name}:latest`);
+export const sameModel = (a, b) => Boolean(a && b) && withTag(a).toLowerCase() === withTag(b).toLowerCase();
+
+// Frees the (V)RAM of the given models if the Ollama at baseUrl has them loaded, and of nothing else: other apps share
+// that Ollama and their models are not ours to drop. Returns the names unloaded.
+export async function unloadOllama(baseUrl, models) {
   baseUrl = (baseUrl || OLLAMA_DEFAULT).replace(/\/+$/, '');
+  const wanted = (models || []).filter(Boolean);
+  if (!wanted.length) return [];
   const ps = await fetchJson(`${baseUrl}/api/ps`, { timeoutMs: 2500 });
-  const names = (ps.models || []).map((m) => m.name);
+  const names = (ps.models || []).map((m) => m.name).filter((name) => wanted.some((w) => sameModel(w, name)));
   for (const model of names) {
     await fetchJson(`${baseUrl}/api/generate`, { timeoutMs: 15000, body: { model, keep_alive: 0 } });
   }
   return names;
 }
+
+// Every model open-mem may load: the chat model (pinned or picked), its fallbacks and the embedding model.
+export const ownModels = (settings, ...extra) => [settings.model, ...(settings.fallbackModels || []), settings.embedModel, ...extra].filter(Boolean);
 
 // One chat call that must answer a JSON object. When the provider carries a recorder (provider.record, see
 // llmstats.mjs), every call is reported with its timings, also the failed ones.
@@ -84,8 +124,9 @@ export async function completeJson(provider, system, user, timeoutMs = 120000) {
     if (provider.kind === 'ollama') {
       res = await fetchJson(`${provider.baseUrl}/api/chat`, {
         timeoutMs,
+        // num_predict: a model that starts repeating itself stops long before the context is full.
         body: { model: provider.model, messages, stream: false, format: 'json', think: false,
-          keep_alive: provider.keepAlive, options: { temperature: 0.2, num_ctx: 8192 } },
+          keep_alive: provider.keepAlive, options: { temperature: 0.2, num_ctx: 8192, num_predict: MAX_REPLY_TOKENS } },
       });
       timings = ollamaTimings(res);
     } else if (provider.kind === 'openai') {
