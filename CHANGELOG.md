@@ -16,6 +16,7 @@
 - Embeddings check whether to stop before each batch, not only after the first one.
 - Less log noise: "drain handled 0 items" is gone, pauses and LLM outages are logged when they start or change and then every 10 minutes, and `open-mem.log` rotates to `open-mem.log.1` past 5 MB.
 - `EpicOnlineServicesUserHelper.exe` no longer counts as a game (`busyIgnore`).
+- README explains that a project is the name of the folder Claude Code runs in, so memory is shared between folders with the same name.
 
 ## 0.7.1
 

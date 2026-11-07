@@ -109,6 +109,8 @@ A detached background process drains the queue: the LLM decides whether a tool c
 
 **Stale tasks:** open tasks untouched for 14 days are marked on the task board.
 
+**Projects:** a project is the name of the folder Claude Code was opened in (not the full path, not the machine). Notes, tasks, recall and the session brief only show records of that project, so to share memory across machines or sessions, open Claude Code in folders with the same name: `G:\Work` on one PC and `~/Work` on a server share it, `~/Work/app` is a separate project `app`. Records of other projects stay reachable through `search` without a project filter.
+
 ### Tools Claude gets (MCP)
 
 | Tool | Use |
