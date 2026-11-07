@@ -3,15 +3,14 @@
 import { loadSettings, saveSettings } from './config.mjs';
 import { getMeta } from './db.mjs';
 import { gpuReports, gpus } from './gpu.mjs';
-import { resolveProvider, unloadOllama } from './llm.mjs';
+import { ownModels, resolveProvider, unloadOllama } from './llm.mjs';
 import { callStats } from './llmstats.mjs';
-import { drainerPid, spawnCli, spawnDrainer } from './queue.mjs';
+import { currentPause, drainerPid, llmDown, spawnCli, spawnDrainer } from './queue.mjs';
 import { countPending, embedEnabled } from './semantic.mjs';
 
 export { parseNvidiaSmi, smiCandidates } from './gpu.mjs';
 
 const OLLAMA_DEFAULT = 'http://127.0.0.1:11434';
-const BUSY_FRESH_MS = 90000;
 const isLocal = (settings) => ['auto', 'ollama'].includes(settings.provider || 'auto');
 const ollamaUrl = (settings) => (settings.baseUrl || OLLAMA_DEFAULT).replace(/\/+$/, '');
 const notEmbedding = (name) => !/embed|bge|nomic|minilm/i.test(name);
@@ -71,7 +70,6 @@ function queueInfo(db) {
 export async function engineStatus(db, settings, { hours } = {}) {
   const local = isLocal(settings);
   const [provider, ollama, gpu] = await Promise.all([resolveProvider(settings), local ? ollamaInfo(ollamaUrl(settings)) : null, gpus()]);
-  const busySeen = Number(getMeta(db, 'busy_seen_at') || 0);
   return {
     now: Date.now(),
     provider: {
@@ -83,7 +81,9 @@ export async function engineStatus(db, settings, { hours } = {}) {
     gpus: gpu.list, gpuError: gpu.error,
     // GPUs reported by the machines that run Ollama, for a server without one of its own.
     remoteGpus: gpuReports(db),
-    busy: Date.now() - busySeen < BUSY_FRESH_MS ? getMeta(db, 'busy_reason') : null,
+    // Why the queue waits, if it does ({ kind: manual|marker|game|gpu|slots|slow, detail, since }).
+    pause: currentPause(db),
+    down: llmDown(db),
     drainer: drainerPid(),
     // An LLM that answered before and is down now: the queue waits for it instead of storing records raw.
     waitingForLlm: provider.kind === 'none' && Boolean(provider.unreachable) && Boolean(getMeta(db, 'llm_seen_at')),
@@ -103,7 +103,7 @@ export async function engineAction(db, settings, action, body = {}) {
     const retried = Number(db.prepare("UPDATE queue SET status = 'pending', attempts = 0, error = NULL WHERE status = 'failed'").run().changes);
     return { retried, started: retried ? spawnDrainer() : false };
   }
-  if (action === 'unload') { needLocal(); return { unloaded: await unloadOllama(base) }; }
+  if (action === 'unload') { needLocal(); return { unloaded: await unloadOllama(base, ownModels(settings, (await resolveProvider(settings)).model)) }; }
   if (action === 'load') {
     needLocal();
     const model = body.model || (await resolveProvider(settings)).model;

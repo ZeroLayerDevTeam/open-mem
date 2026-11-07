@@ -2,11 +2,15 @@
 // server; the server stores them with `source = <original source>@<device>` so nothing collides.
 import { log } from './config.mjs';
 import { getMeta, setMeta, transaction } from './db.mjs';
+import { gpus, storeGpuReport } from './gpu.mjs';
 import { upsertSyncedItem } from './items.mjs';
 import { asText, insertObservation, upsertSummary } from './store.mjs';
 
 const BATCH = 400;
 const MAX_ROWS = 2000; // per kind, per request (server side)
+const STATUS_EVERY_MS = 60000;
+const STATUS_KEEP_MS = 14 * 864e5;
+const PAUSE_KINDS = new Set(['manual', 'marker', 'game', 'gpu', 'slots', 'slow', 'error']);
 
 // --- client ------------------------------------------------------------------
 export async function remoteFetch(settings, method, route, body, timeoutMs = settings.remoteTimeoutMs) {
@@ -78,7 +82,45 @@ export async function pushPending(db, settings, { onProgress } = {}) {
   return total;
 }
 
+// Client: after a drain, tell the server how this machine's queue is doing, plus its GPU when it runs the LLM. At most
+// once a minute, but at once when the queue pauses or resumes, empties, or the LLM goes down or comes back: the
+// server's web viewer must not show a stale "processing" for a queue that waits. `send` is remoteFetch bound to settings.
+export async function reportStatus(db, send, { queue, withGpus = false, now = Date.now(), read = gpus } = {}) {
+  const sig = JSON.stringify([queue.pause?.kind ?? null, queue.pause?.detail ?? null, Boolean(queue.down), queue.pending === 0]);
+  let last = null;
+  try { last = JSON.parse(getMeta(db, 'status_reported_at') || 'null'); } catch { /* first report */ }
+  if (last?.sig === sig && now - last.at < STATUS_EVERY_MS) return false;
+  setMeta(db, 'status_reported_at', JSON.stringify({ at: now, sig }));
+  const list = withGpus ? (await read()).list : null;
+  await send('POST', '/api/client', { queue, ...(list?.length ? { gpus: list } : {}) });
+  return true;
+}
+
 // --- server ------------------------------------------------------------------------
+const numOrNull = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+const textOr = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+
+// Keeps the latest status of a device (values checked, strings cut); a GPU list in it is stored as a GPU report.
+export function storeClientStatus(db, device, body, now = Date.now()) {
+  const q = body?.queue && typeof body.queue === 'object' ? body.queue : {};
+  const p = q.pause && PAUSE_KINDS.has(q.pause.kind) ? q.pause : null;
+  const status = {
+    at: now, pending: numOrNull(q.pending) ?? 0, oldest: numOrNull(q.oldest), failed: numOrNull(q.failed) ?? 0,
+    pause: p ? { kind: p.kind, detail: textOr(p.detail, 200), since: numOrNull(p.since), until: numOrNull(p.until) } : null,
+    down: q.down ? { since: numOrNull(q.down.since), ms: numOrNull(q.down.ms), reason: textOr(q.down.reason, 300) } : null,
+  };
+  setMeta(db, `client_status:${device}`, JSON.stringify(status));
+  if (Array.isArray(body?.gpus) && body.gpus.length) storeGpuReport(db, device, body, now);
+  return status;
+}
+
+// Latest status per device, newest first; devices silent for two weeks are left out.
+export function clientStatuses(db, now = Date.now()) {
+  return db.prepare("SELECT key, value FROM meta WHERE key LIKE 'client_status:%'").all().map((r) => {
+    try { return { device: r.key.slice('client_status:'.length), ...JSON.parse(r.value) }; } catch { return null; }
+  }).filter((s) => s && now - s.at < STATUS_KEEP_MS).sort((a, b) => b.at - a.at);
+}
+
 const arr = (v) => (Array.isArray(v) ? v.slice(0, MAX_ROWS) : []);
 const tag = (source, device) => `${String(source || 'native').split('@')[0]}@${device}`;
 

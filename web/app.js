@@ -283,6 +283,31 @@ function pageHref(n) {
 }
 const pageOf = (params) => Math.max(1, Number(params.get('page')) || 1);
 
+// Why a queue waits ({ kind, detail } from the drainer), in words. A game shows as its file name.
+function pauseText(p) {
+  const label = { manual: t('Paused by hand'), marker: t('Another job holds the GPU'), game: t('A game is running'), gpu: t('Not enough free GPU memory'),
+    slots: t('Ollama is full with other apps\' models'), slow: t('The LLM is too slow right now, trying again in a few minutes'),
+    error: t('The LLM failed, trying again in a few minutes') }[p.kind] || p.kind;
+  const detail = p.kind === 'game' ? String(p.detail || '').split(/[\\/]/).pop() : p.detail;
+  return detail ? `${label}: ${clip(detail, 120)}` : label;
+}
+
+// Queues that wait or work, per machine: a delay in the activity chart must not read as missing work.
+function queuesPanel(queues) {
+  if (!queues?.length) return '';
+  const row = (q) => {
+    const [state, label, why] = q.down ? ['down', t('Waiting for the LLM'), t('Not answering since {when}: {reason}', { when: ago(q.down.since), reason: clip(q.down.reason, 160) })]
+      : q.pause ? ['paused', t('Paused'), t('Since {when}: {reason}', { when: ago(q.pause.since), reason: pauseText(q.pause) })]
+        : ['work', t('Processing'), ''];
+    return html`<li><div class="lead"><span class="state" data-s="${state}">${label}</span><span class="meta-item">${icon('device')}${q.device}</span>
+      ${Date.now() - q.at > 30 * 60000 ? html`<span>${t('last report {when}', { when: ago(q.at) })}</span>` : ''}</div>
+      <span class="title">${q.pending ? t('{n} items in the queue, the oldest from {when}', { n: fmt(q.pending), when: dateTime(q.oldest) }) : t('Queue empty')}</span>
+      ${why ? html`<p class="snippet">${why}</p>` : ''}</li>`;
+  };
+  return html`<section class="panel"><header class="panel-head"><h2>${t('Queue')}</h2><span class="muted">${t('Records appear in the activity chart, on the day they were captured, once the queue processes them.')}</span></header>
+    <ul class="list compact">${queues.map(row)}</ul></section>`;
+}
+
 // --- progress -----------------------------------------------------------------------------------------------------
 const overviewPage = {
   async render({ signal }) {
@@ -296,6 +321,7 @@ const overviewPage = {
         ${kpi(o.doneWeek, t('tasks done this week'), '#/tasks')}${kpi(s.observations, t('observations'), '#/timeline?kinds=obs')}
         ${kpi(s.sessions, t('sessions'), '#/sessions')}${kpi(s.projects, t('projects'), '#/projects')}
       </section>
+      ${queuesPanel(o.queues)}
       <section class="panel"><header class="panel-head"><h2>${t('Activity')}</h2><span class="muted">${t('Records per day, last {n} weeks', { n: 53 })}</span></header>${heatmap(o.activity, 53)}</section>
       <div class="cols">
         <section class="panel"><header class="panel-head"><h2>${t('Open tasks')}</h2><a href="#/tasks">${t('All tasks')}</a></header>
@@ -856,8 +882,8 @@ document.addEventListener('scroll', () => { tipEl.hidden = true; }, { passive: t
 function llmState(s) {
   const waiting = s.queue.counts.filter((c) => c.status !== 'failed').reduce((n, c) => n + c.n, 0);
   if (s.waitingForLlm) return ['down', t('Not answering'), t('{n} items wait for it', { n: fmt(waiting) })];
+  if (s.pause) return ['paused', t('Paused'), pauseText(s.pause)];
   if (s.provider.kind === 'none') return ['off', t('No LLM'), s.provider.reason ? clip(s.provider.reason, 90) : ''];
-  if (s.busy) return ['paused', t('Paused for a game'), clip(String(s.busy).split(/[\\/]/).pop(), 60)];
   if (s.drainer) return ['work', t('Working'), t('processing the queue')];
   return ['ready', t('Ready'), waiting ? t('{n} items waiting', { n: fmt(waiting) }) : t('queue empty')];
 }
@@ -990,7 +1016,7 @@ const llmPage = {
     const queue = html`<div class="minis"><span>${t('Tool calls')} <b>${fmt(count('observation', 'pending') + count('observation', 'processing'))}</b></span>
         <span>${t('Turn summaries')} <b>${fmt(count('summary', 'pending') + count('summary', 'processing'))}</b></span><span>${t('Failed')} <b>${fmt(failed)}</b></span></div>
       <div class="btns"><button class="btn primary" type="button" data-action="drain" ${s.drainer ? raw('disabled') : ''}>${s.drainer ? t('Processing…') : t('Process the queue now')}</button>
-        ${s.provider.pauseWhenBusy && s.provider.kind === 'ollama' ? html`<button class="btn" type="button" data-action="drain" data-force="1" ${s.drainer ? raw('disabled') : ''}>${t('Process now, even during a game')}</button>` : ''}
+        ${s.provider.kind === 'ollama' && (s.provider.pauseWhenBusy || s.pause?.kind === 'manual') ? html`<button class="btn" type="button" data-action="drain" data-force="1" ${s.drainer ? raw('disabled') : ''}>${t('Process now, even during a game or a pause')}</button>` : ''}
         ${failed ? html`<button class="btn" type="button" data-action="retry">${t('Retry {n} failed', { n: fmt(failed) })}</button>` : ''}</div>
       ${s.queue.next.length ? html`<h3 class="sub-h">${t('Next in line')}</h3><ul class="list compact">${s.queue.next.map(queueRow)}</ul>` : html`<p class="foot-note">${t('Nothing waiting: every tool call is already in memory.')}</p>`}
       ${s.queue.failed.length ? html`<details class="as-table" data-key="failed"><summary>${t('Failed items ({n})', { n: fmt(failed) })}</summary><ul class="list compact">${s.queue.failed.map(queueRow)}</ul></details>` : ''}`;

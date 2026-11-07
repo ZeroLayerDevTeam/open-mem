@@ -74,6 +74,18 @@ No usable GPU (a typical office laptop) leaves these options, `setup` lists them
 
 The model shares the GPU with games: while one runs the queue waits and the model is unloaded (see Gaming below).
 
+### Sharing the GPU with other work
+
+A local model also competes with other GPU work: model training, another app's models in the same Ollama, a render. open-mem only takes what is left over, and never unloads a model it did not load:
+
+- **GPU budget** (`gpuBudget`, needs `nvidia-smi`): before every call, open-mem checks that its model fits in the free video memory minus `OLLAMA_GPU_OVERHEAD` and `gpuReserveMb` (1536 MiB), counting its own loaded models as free. It also waits when loading its model would push another app's model out of Ollama (`OLLAMA_MAX_LOADED_MODELS`, Ollama's default is 3 per GPU). Both variables are read from the environment, and on Windows from the user's environment in the registry.
+- **Smaller models** (`fallbackModels`, e.g. `["gemma3:4b"]`, installed with `ollama pull`): used instead of `model` when it does not fit, while another app has a model loaded in Ollama, or while more than `backlogItems` (500) wait in the queue, to catch up faster.
+- **Marker files** (`busyFiles`, default `~/.gpu-busy`): while a file listed there, or any file inside a listed folder, exists, nothing goes to the local Ollama and open-mem frees its own models. A job writes one before it reserves the GPU and removes it when it ends. A JSON marker with `stale_after_s` (and optionally `heartbeat`, an ISO time) only counts while its heartbeat or modification time is that fresh, so a crashed job does not block the queue; `owner` and `phase` show as the reason.
+- **Manual pause:** `node "$OM" pause [--hours N] [reason]` holds the queue (and closes the GPU guard) until `node "$OM" resume`.
+- A timeout means the GPU is busy elsewhere: the item keeps its attempts and the queue waits 2 minutes before the next call.
+
+The queue only ever waits: nothing is dropped. The web viewer's Progress page shows each machine's queue and why it waits (on a shared server, as reported by each client), and records land on the day they were captured once processed.
+
 ## How it works
 
 | Hook | What it does |
@@ -83,9 +95,9 @@ The model shares the GPU with games: while one runs the queue waits and the mode
 | `PostToolUse` | Queues the tool call. No network, returns immediately. |
 | `Stop` | Queues a summary of the turn. |
 
-A detached background process drains the queue: the LLM decides whether a tool call is worth remembering and writes a structured observation (title, narrative, facts, concepts, files). At the end of each turn it writes a summary, and every `briefEvery` new records it rewrites the project brief. If the LLM is unreachable, items wait in the queue.
+A detached background process drains the queue: the LLM decides whether a tool call is worth remembering and writes a structured observation (title, narrative, facts, concepts, files). At the end of each turn it writes a summary, and every `briefEvery` new records it rewrites the project brief. If the LLM is unreachable, items wait in the queue: open-mem starts a local Ollama that is installed but not running (`ollamaAutostart`, Windows and macOS, at most every 10 minutes), and every session start warns while it stays down. Only after `llmWaitHours` of downtime counted while the machine is in use (gaps between drains longer than 15 minutes, such as a night with the machine off, do not count) is the queue stored without the LLM.
 
-**Gaming:** a local model and a game fight over the same GPU. While a game runs (anything under Steam, Epic, Xbox, EA, GOG, Riot or Ubisoft game folders, plus whatever you list in `busyProcesses`), the queue waits and the Ollama models are unloaded; it drains once the game closes. `node "$OM" busy` shows what is detected.
+**Gaming:** a local model and a game fight over the same GPU. While a game runs (anything under Steam, Epic, Xbox, EA, GOG, Riot or Ubisoft game folders, plus whatever you list in `busyProcesses`), the queue waits and open-mem's Ollama models are unloaded; it drains once the game closes. `node "$OM" busy` shows what is detected.
 
 **Semantic search:** after each drain, new records get an embedding from Ollama (`embedModel`, default `embeddinggemma`; `ollama pull embeddinggemma`). Searches merge full-text and vector results, so a search finds records that say the same thing in other words. Without the model, during a game, or when Ollama is down, search is full-text only.
 
@@ -155,7 +167,7 @@ node "$OM" config set guardAllow 192.168.0.10            # the server's address
 node "$OM" config set baseUrl http://192.168.0.20:11435  # the machine with the GPU
 ```
 
-Ollama stays on loopback: the guard is the only way in, only for the listed addresses and only for the calls a server needs (never pull or delete). While a game runs it answers 503, cuts the calls in flight and unloads the models, within `guardPollSeconds`. The server reads that as an LLM that is down, so its work waits and search stays full-text. Listing processes costs half a second, so the guard only does it while the server is using the GPU. With the guard stopped the server has no LLM at all: a failure never takes the GPU from a game.
+Ollama stays on loopback: the guard is the only way in, only for the listed addresses and only for the calls a server needs (never pull or delete). While a game runs, a marker file is live or the queue is paused by hand, it answers 503, cuts the calls in flight and unloads open-mem's models (its own and those the server used, never another app's), within `guardPollSeconds`. A call whose model does not fit in the GPU budget gets 503 too. The server reads that as an LLM that is down, so its work waits and search stays full-text. Listing processes costs half a second, so the guard only does it while the server is using the GPU. With the guard stopped the server has no LLM at all: a failure never takes the GPU from a game.
 
 ## LLM providers
 
@@ -175,8 +187,9 @@ node "$OM" status                 # counts, LLM, mode, claude-mem detection
 node "$OM" import                 # import new claude-mem rows (safe to repeat)
 node "$OM" search nginx certs     # search from the terminal
 node "$OM" brief my-project       # rewrite a project brief now
-node "$OM" drain [--force] | sync # process the queue (--force: even while a game runs) / push to the server now
-node "$OM" busy [--unload]        # is a game running? (exit 0 = busy)
+node "$OM" drain [--force] | sync # process the queue (--force: even while a game runs or paused by hand) / push to the server now
+node "$OM" pause [--hours N] [reason] | resume  # hold the queue and close the GPU guard, until resume or for N hours
+node "$OM" busy [--unload]        # is a game running? (exit 0 = busy; --unload frees open-mem's models)
 node "$OM" embed [--all]          # compute missing embeddings now (--all: no per-run limit)
 node "$OM" review-notes my-project  # check a project's notes for contradictions now
 node "$OM" lessons my-project     # look for mistakes fixed in several sessions now
@@ -226,9 +239,13 @@ claude-open-mem never deletes claude-mem data.
 | `mode` / `serverUrl` / `deviceName` | `local` | Shared mode (set with `remote connect`) |
 | `webHost` / `webPort` / `webAutostart` | `127.0.0.1` / 37800 / `true` | Web viewer |
 | `maxToolChars` | 6000 | Tool output sent to the LLM |
-| `llmWaitHours` | 72 | How long queued calls wait for an LLM that is down before being stored without it |
+| `llmWaitHours` | 72 | Hours of downtime while the machine is in use before queued calls are stored without the LLM (pauses never count) |
+| `ollamaAutostart` | `true` | Start a local Ollama that does not answer (Windows, macOS; loopback `baseUrl` only), at most every 10 minutes |
+| `fallbackModels` / `backlogItems` | `[]` / 500 | Smaller chat models used when `model` does not fit, while another app has a model loaded, or while more than `backlogItems` wait |
+| `gpuBudget` / `gpuReserveMb` | `true` / 1536 | Send work to the local Ollama only when its model fits in free video memory minus `OLLAMA_GPU_OVERHEAD` and this reserve, without pushing another app's model out |
+| `busyFiles` | `["~/.gpu-busy"]` | Marker files or folders: while one exists, the local Ollama gets nothing and open-mem frees its own models |
 | `llmKeepAlive` | `10m` | How long Ollama keeps the model loaded after the last call |
-| `pauseWhenBusy` | `true` | Pause the queue and unload Ollama models while a game runs |
+| `pauseWhenBusy` | `true` | Pause the queue and unload open-mem's Ollama models while a game runs |
 | `busyProcesses` | `[]` | Exe names (`GTA5.exe`) or folders (`D:\Games\`) that count as a game |
 | `busyPaths` / `busyIgnore` | game libraries / launchers | Folders whose programs count as games, and exceptions |
 | `branchWarning` / `dailyRecap` | `true` / `true` | Branch warning and first-session-of-the-day recap at session start |

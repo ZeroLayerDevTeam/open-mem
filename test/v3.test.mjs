@@ -44,7 +44,7 @@ function fakeOllama(chatReply) {
 test('v3 embeddings: pending records are embedded, a changed or deleted record loses its vector', async () => {
   const db = openDb(path.join(TMP, 'emb.db'));
   const o = await fakeOllama({});
-  const settings = { ...DEFAULT_SETTINGS, baseUrl: o.url, embedModel: 'fake-embed' };
+  const settings = { ...DEFAULT_SETTINGS, baseUrl: o.url, embedModel: 'fake-embed', busyFiles: [] };
   try {
     const a = store.insertObservation(db, { project: 'p', type: 'discovery', title: 'Postgres database restore', created_at: 1 });
     store.insertObservation(db, { project: 'p', type: 'discovery', title: 'GPU stutter while gaming', created_at: 2 });
@@ -67,7 +67,7 @@ test('v3 embeddings: pending records are embedded, a changed or deleted record l
 test('hybrid search finds records by meaning and falls back to full-text', async () => {
   const db = openDb(path.join(TMP, 'hyb.db'));
   const o = await fakeOllama({});
-  const settings = { ...DEFAULT_SETTINGS, baseUrl: o.url, embedModel: 'fake-embed' };
+  const settings = { ...DEFAULT_SETTINGS, baseUrl: o.url, embedModel: 'fake-embed', busyFiles: [] };
   try {
     const gpu = store.insertObservation(db, { project: 'games', type: 'bugfix', title: 'Stutter fixed', narrative: 'the gpu was busy with the llm', created_at: 1 });
     store.insertObservation(db, { project: 'infra', type: 'discovery', title: 'Database dump size', created_at: 2 });
@@ -82,12 +82,12 @@ test('hybrid search finds records by meaning and falls back to full-text', async
     const whole = (await semantic.hybridSearch(db, { query: 'gpu', limit: 4 }, settings)).map(store.refId);
     const paged = [0, 2].map((offset) => semantic.hybridSearch(db, { query: 'gpu', limit: 2, offset }, settings));
     assert.deepEqual((await Promise.all(paged)).flat().map(store.refId), whole);
-    // A game running (cached busy answer): no embedding call, full-text only.
+    // A game running (pause seen by a drainer): no embedding call, full-text only.
     const before = o.calls.embed;
-    setMeta(db, 'busy_seen_at', Date.now());
+    setMeta(db, 'pause', JSON.stringify({ kind: 'game', detail: 'game.exe', since: Date.now(), at: Date.now() }));
     await semantic.hybridSearch(db, { query: 'gpu' }, settings);
     assert.equal(o.calls.embed, before);
-    setMeta(db, 'busy_seen_at', 0);
+    setMeta(db, 'pause', '');
     // Ollama gone: full-text.
     o.server.close();
     const fts = await semantic.hybridSearch(db, { query: 'database' }, { ...settings, baseUrl: 'http://127.0.0.1:9' });

@@ -1,6 +1,7 @@
 // Semantic search: Ollama embeddings of every record, merged with the full-text search by reciprocal rank fusion.
 // Vectors are cut to DIM dimensions and normalized (embeddinggemma is trained for that), so a dot product is the
 // cosine and the whole database fits in memory. Without an Ollama with the embedding model, search stays full-text.
+import { manualPause, markerPause } from './budget.mjs';
 import { getMeta } from './db.mjs';
 import { ollamaTimings, recordCall } from './llmstats.mjs';
 import { clip, normalizeSearch, refId, search } from './store.mjs';
@@ -76,8 +77,8 @@ export const countPending = (db) => db.prepare(`SELECT
   + (SELECT count(*) FROM summaries s WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.ref = 'S' || s.id))
   + (SELECT count(*) FROM items i WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.ref = 'I' || i.id)) n`).get().n;
 
-// Embeds up to `max` records without a vector, newest first, in batches. `stop()` is checked between batches
-// (a game started). Returns how many were embedded.
+// Embeds up to `max` records without a vector, newest first, in batches. `stop()` is checked before each batch
+// (a game started, the GPU is needed elsewhere). Returns how many were embedded.
 export async function embedPending(db, settings, { max = 2000, batch = 32, stop = async () => false } = {}) {
   if (!embedEnabled(settings)) return 0;
   // Vectors of another model cannot be compared: a model change starts over.
@@ -86,7 +87,7 @@ export async function embedPending(db, settings, { max = 2000, batch = 32, stop 
   let done = 0;
   while (done < max) {
     const rows = pendingEmbeddings(db, Math.min(batch, max - done));
-    if (!rows.length) break;
+    if (!rows.length || await stop()) break;
     const vecs = await embed(settings, rows.map((r) => clip(r.text, 2000)), 120000, (s) => recordCall(db, s));
     db.exec('BEGIN IMMEDIATE');
     try {
@@ -97,7 +98,6 @@ export async function embedPending(db, settings, { max = 2000, batch = 32, stop 
       throw err;
     }
     done += rows.length;
-    if (await stop()) break;
   }
   return done;
 }
@@ -155,17 +155,25 @@ function rowFor(db, ref, o) {
   return { ...row, kind };
 }
 
+// A pause a drainer saw in the last minute, or a live marker or manual pause (no drainer needed to notice those).
+function pausedNow(db, settings) {
+  let p = null;
+  try { p = JSON.parse(getMeta(db, 'pause') || 'null'); } catch { /* none */ }
+  return Boolean((p && p.kind !== 'slow' && Date.now() - p.at < 60000) || manualPause() || markerPause(settings));
+}
+
 const KINDS = { all: ['obs', 'sum', 'item'], observations: ['obs'], summaries: ['sum'], items: ['item'], notes: ['item'], tasks: ['item'] };
 
 // Full-text and vector results merged by reciprocal rank fusion. Falls back to plain full-text search when there is
-// no query, no vectors, a game holds the GPU, or Ollama does not answer in QUERY_TIMEOUT_MS.
+// no query, no vectors, the queue is paused (a game, a marker file, a manual pause, no free GPU memory), or Ollama does
+// not answer in QUERY_TIMEOUT_MS.
 export async function hybridSearch(db, opts, settings = {}) {
   const o = normalizeSearch(opts);
   const fts = () => search(db, opts);
   // Later pages rank the same fused pool, so paging never skips or repeats a record (full-text past MAX_POOL).
   const pool = Math.max(POOL, o.offset + o.limit);
   if (!o.query || !embedEnabled(settings) || pool > MAX_POOL) return fts();
-  if (Date.now() - Number(getMeta(db, 'busy_seen_at') || 0) < 60000) return fts();
+  if (pausedNow(db, settings)) return fts();
   if (!db.prepare('SELECT 1 FROM embeddings WHERE model = ? LIMIT 1').get(settings.embedModel)) return fts();
   let q;
   try { [q] = await embed(settings, [o.query], QUERY_TIMEOUT_MS); } catch { return fts(); }

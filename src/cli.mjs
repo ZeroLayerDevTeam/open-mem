@@ -4,11 +4,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { addDevice, createAdminToken, hasAdminToken, listDevices, removeDevice } from './auth.mjs';
 import { DEFAULT_SETTINGS, dataDir, dataPath, deviceName, loadSettings, log, saveSettings, VERSION } from './config.mjs';
-import { backupDb, openDb } from './db.mjs';
+import { backupDb, getMeta, openDb } from './db.mjs';
 import { claudeMemDbPath, installedPluginIds, importClaudeMem, uninstallClaudeMem } from './claudemem.mjs';
 import { busyReason } from './busy.mjs';
-import { resolveProvider, unloadOllama } from './llm.mjs';
-import { drain, drainerPid, findLessons, generateBrief, reviewNotes, spawnDrainer } from './queue.mjs';
+import { clearPause, setPause } from './budget.mjs';
+import { ownModels, resolveProvider, unloadOllama } from './llm.mjs';
+import { drain, drainerPid, endPause, findLessons, generateBrief, queueState, reviewNotes, spawnDrainer } from './queue.mjs';
 import { withRecorder } from './llmstats.mjs';
 import { call } from './backend.mjs';
 import { exportFileName, itemsMarkdown } from './export.mjs';
@@ -29,8 +30,10 @@ Usage: node cli.mjs <command> [options]
   setup [--yes] [--model M] [--cpu]
                                  Detect the GPU, install Ollama if missing and pull the model that fits it (asks first)
   import [--quiet]               Import new rows from claude-mem (read-only, incremental)
-  drain [--force]                Process the pending queue now (--force: even while a game runs)
-  busy [--unload]                Is a game running? (exit 0 = busy) --unload frees the Ollama models then
+  drain [--force]                Process the pending queue now (--force: even while a game runs or paused by hand)
+  pause [--hours N] [reason]     Keep the queue waiting (and the GPU guard closed) until resume, or for N hours
+  resume                         End a pause set with pause
+  busy [--unload]                Is a game running? (exit 0 = busy) --unload frees open-mem's Ollama models then
   search <query> [--project P]   Search memory from the terminal
   redact                         Re-scan stored memory and redact secrets
   brief <project>                Regenerate a project's brief now (needs an LLM)
@@ -124,6 +127,9 @@ async function main() {
       console.log(`claude-open-mem ${VERSION}  data: ${dataDir()}`);
       console.log(`observations ${s.observations} (imported ${s.imported}) · summaries ${s.summaries} · prompts ${s.prompts}`);
       console.log(`notes ${s.notes} · tasks ${s.tasks} · queue pending ${s.queuePending} · failed ${s.queueFailed}`);
+      const q = queueState(db);
+      if (q.pause) console.log(`queue paused since ${new Date(q.pause.since).toLocaleString()}: ${q.pause.kind}${q.pause.detail ? ` (${q.pause.detail})` : ''}`);
+      if (q.down) console.log(`LLM down since ${new Date(q.down.since).toLocaleString()} (${Math.round(q.down.ms / 60000)} min while in use): ${q.down.reason}`);
       console.log(`LLM: ${provider.kind}${provider.model ? ` (${provider.model} @ ${provider.baseUrl})` : ''}${provider.reason ? ` — ${provider.reason}` : ''}`);
       console.log(`mode ${settings.mode}${settings.mode === 'remote' ? ` → ${settings.serverUrl} as ${deviceName(settings)} · unsynced ${s.unsynced}` : ''}`
         + ` · web admin token ${hasAdminToken(db) ? 'set' : 'not set'}`);
@@ -143,12 +149,25 @@ async function main() {
       console.log(`redacted ${redactExisting(db)} rows`);
     } else if (cmd === 'drain') {
       const n = await drain(db, settings, { force: flag(args, '--force') });
-      log('info', `drain handled ${n} items`);
+      if (n) log('info', `drain handled ${n} items`);
+    } else if (cmd === 'pause') {
+      const hours = Number(option(args, '--hours')) || 0;
+      const p = setPause({ reason: args.join(' '), hours });
+      log('info', `queue paused by hand${p.reason ? `: ${p.reason}` : ''}${p.until ? ` until ${new Date(p.until).toISOString()}` : ''}`);
+      console.log(`paused${p.until ? ` until ${new Date(p.until).toLocaleString()}` : ' until `resume`'}`);
+    } else if (cmd === 'resume') {
+      const had = clearPause();
+      console.log(had ? 'resumed' : 'not paused');
+      if (had) {
+        log('info', 'queue resumed by hand');
+        endPause(db); // drainers reuse a recent pause: forget it now
+        spawnDrainer();
+      }
     } else if (cmd === 'busy') {
       const reason = await busyReason(settings);
       let unloaded = [];
       if (reason && flag(args, '--unload') && ['auto', 'ollama'].includes(settings.provider || 'auto')) {
-        try { unloaded = await unloadOllama(settings.baseUrl); } catch { /* Ollama not running */ }
+        try { unloaded = await unloadOllama(settings.baseUrl, ownModels(settings, getMeta(db, 'llm_model'))); } catch { /* Ollama not running */ }
       }
       console.log(reason ? `busy: ${reason}${unloaded.length ? ` (unloaded ${unloaded.join(', ')})` : ''}` : 'idle');
       process.exitCode = reason ? 0 : 1;

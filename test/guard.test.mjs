@@ -39,7 +39,7 @@ async function fakeOllama() {
 async function setup({ allow = ['127.0.0.1'], pollSeconds = 0.05 } = {}) {
   const ollama = await fakeOllama();
   const state = { busy: null, looks: 0, unloads: 0 };
-  const settings = { ...DEFAULT_SETTINGS, baseUrl: ollama.url, guardAllow: allow, guardPort: 0, guardPollSeconds: pollSeconds };
+  const settings = { ...DEFAULT_SETTINGS, baseUrl: ollama.url, guardAllow: allow, guardPort: 0, guardPollSeconds: pollSeconds, busyFiles: [] };
   const guard = await startGuard(settings, {
     busy: async () => { state.looks++; return state.busy; },
     unload: async () => { state.unloads++; return []; },

@@ -25,6 +25,7 @@ node --no-warnings "$OM" status
 | Counts, LLM, mode, claude-mem detection | `node --no-warnings "$OM" status` |
 | Import claude-mem history (read-only, incremental) | `node --no-warnings "$OM" import` |
 | Process pending queue now | `node --no-warnings "$OM" drain` |
+| Hold / release the queue (GPU needed elsewhere) | `node --no-warnings "$OM" pause [--hours N] [reason]` / `resume` |
 | Rewrite a project brief now | `node --no-warnings "$OM" brief <project>` |
 | Show / change settings | `node --no-warnings "$OM" config [set <key> <value>]` |
 | Run the web viewer | `node --no-warnings "$OM" serve [--host H] [--port P]` |
