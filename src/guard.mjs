@@ -104,7 +104,8 @@ export function createGuard(settings, { busy = busyReason, unload = unloadOllama
       }
       lastRequest = Date.now();
       if (!ROUTES.has(`${req.method} ${req.url.split('?')[0]}`)) return reply(res, 404, 'route not allowed');
-      const closed = await (Date.now() - checkedAt >= pollMs ? check() : checking ?? reason);
+      // A marker or a manual pause closes the door at once (a stat per request), not only at the next poll.
+      const closed = await (Date.now() - checkedAt >= pollMs || (!reason && paused(reload())) ? check() : checking ?? reason);
       if (closed) return reply(res, 503, `GPU busy: ${label(closed)}`);
       const body = req.method === 'POST' ? await readBody(req) : null;
       let json = null;

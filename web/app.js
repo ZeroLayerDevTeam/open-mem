@@ -286,7 +286,8 @@ const pageOf = (params) => Math.max(1, Number(params.get('page')) || 1);
 // Why a queue waits ({ kind, detail } from the drainer), in words. A game shows as its file name.
 function pauseText(p) {
   const label = { manual: t('Paused by hand'), marker: t('Another job holds the GPU'), game: t('A game is running'), gpu: t('Not enough free GPU memory'),
-    slots: t('Ollama is full with other apps\' models'), slow: t('The LLM is too slow right now, trying again in a few minutes') }[p.kind] || p.kind;
+    slots: t('Ollama is full with other apps\' models'), slow: t('The LLM is too slow right now, trying again in a few minutes'),
+    error: t('The LLM failed, trying again in a few minutes') }[p.kind] || p.kind;
   const detail = p.kind === 'game' ? String(p.detail || '').split(/[\\/]/).pop() : p.detail;
   return detail ? `${label}: ${clip(detail, 120)}` : label;
 }

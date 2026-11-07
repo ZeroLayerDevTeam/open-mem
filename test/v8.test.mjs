@@ -23,7 +23,7 @@ saveSettings({ ...BASE, provider: 'none', webAutostart: false, autoImportClaudeM
 const GB = 1024 ** 3;
 
 // A fake Ollama shared by another app: `loaded` is what /api/ps lists; every request is recorded.
-async function fakeOllama({ loaded = [], reply = '{"skip": false, "type": "discovery", "title": "t", "narrative": "n"}', chatDelayMs = 0 } = {}) {
+async function fakeOllama({ loaded = [], reply = '{"skip": false, "type": "discovery", "title": "t", "narrative": "n"}', chatDelayMs = 0, chatStatus = 200 } = {}) {
   const calls = [];
   const server = http.createServer((req, res) => {
     let body = '';
@@ -31,7 +31,8 @@ async function fakeOllama({ loaded = [], reply = '{"skip": false, "type": "disco
     req.on('end', () => {
       const json = body ? JSON.parse(body) : null;
       calls.push({ route: req.url, body: json });
-      const send = (o) => { if (!res.destroyed) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); } };
+      const send = (o, status = 200) => { if (!res.destroyed) { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); } };
+      if (req.url === '/api/chat' && chatStatus !== 200) return send({ error: 'model failed to load' }, chatStatus);
       if (req.url === '/api/ps') return send({ models: loaded.map((name) => ({ name, size: 3 * GB, size_vram: 3 * GB })) });
       if (req.url === '/api/tags') return send({ models: [{ name: 'gemma3:12b', size: 8 * GB }, { name: 'gemma3:4b', size: 3 * GB }, { name: 'embeddinggemma:latest', size: 0.6 * GB }] });
       if (req.url === '/api/chat') return setTimeout(() => send({ message: { content: reply }, eval_count: 10, eval_duration: 1e8 }), chatDelayMs);
@@ -206,7 +207,7 @@ test('drain: a timeout keeps the item and its attempts, and waits a while before
     setMeta(db, 'pause', ''); // a drainer that does not reuse the pause still respects the backoff
     assert.equal(await queue.drain(db, settings, { lock: false, sync: false, provider: provider(), plan: free }), 0);
     assert.equal(o.calls.filter((c) => c.route === '/api/chat').length, chats);
-    assert.ok(Number(getMeta(db, 'llm_slow_until')) > Date.now());
+    assert.ok(JSON.parse(getMeta(db, 'llm_backoff')).until > Date.now());
   } finally { o.close(); db.close(); }
 });
 
@@ -306,4 +307,51 @@ test('guard: a marker closes the door; a call whose model does not fit is refuse
     assert.ok(unloaded.includes('gemma3:4b'), 'a model the server used through the door');
     assert.ok(!unloaded.includes('qwen3:8b'), 'never another app\'s');
   } finally { guard.closeAllConnections(); guard.close(); o.close(); }
+});
+
+test('drain: Ollama errors wait instead of burning the attempts in a row; a refused call (503) costs none', async () => {
+  const db = openDb(path.join(TMP, 'errors.db'));
+  const free = async (s, { model }) => ({ model, unload: [] });
+  try {
+    enqueueReads(db, 1);
+    const failing = await fakeOllama({ chatStatus: 500 });
+    try {
+      assert.equal(await queue.drain(db, BASE, { lock: false, sync: false, provider: { kind: 'ollama', model: 'gemma3:12b', baseUrl: failing.url }, plan: free }), 0);
+      assert.deepEqual({ ...db.prepare('SELECT status, attempts FROM queue').get() }, { status: 'pending', attempts: 1 });
+      assert.equal(queue.queueState(db).pause.kind, 'error');
+      assert.equal(failing.calls.filter((c) => c.route === '/api/chat').length, 1, 'one call, then a wait');
+    } finally { failing.close(); }
+    setMeta(db, 'llm_backoff', '');
+    setMeta(db, 'pause', '');
+    const closed = await fakeOllama({ chatStatus: 503 });
+    try {
+      await queue.drain(db, BASE, { lock: false, sync: false, provider: { kind: 'ollama', model: 'gemma3:12b', baseUrl: closed.url }, plan: free });
+      assert.deepEqual({ ...db.prepare('SELECT status, attempts FROM queue').get() }, { status: 'pending', attempts: 1 });
+    } finally { closed.close(); }
+  } finally { db.close(); }
+});
+
+test('drain: while a marker holds, Ollama is not even asked; a reply without a title is retried, not dropped', async () => {
+  const db = openDb(path.join(TMP, 'early.db'));
+  const o = await fakeOllama({ reply: '{"skip": false, "type": "bugfix", "subt' });
+  const dir = path.join(TMP, 'early-markers');
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    const prompt = store.addPrompt(db, { sessionId: 'se', project: 'p8', cwd: '/x/p8', text: 'cambia' });
+    queue.enqueue(db, 'observation', 'se', 'p8', { tool: 'Edit', input: { file_path: '/x/app.conf' }, output: 'ok', prompt_number: prompt, at: 5000 });
+    setMeta(db, 'llm_model', 'gemma3:4b');
+    fs.writeFileSync(path.join(dir, 'train'), '');
+    const settings = { ...BASE, provider: 'auto', baseUrl: o.url, busyFiles: [dir] };
+    assert.equal(await queue.drain(db, settings, { lock: false, sync: false }), 0);
+    assert.deepEqual(o.calls.map((c) => c.route), ['/api/ps'], 'only the unload of its own models');
+    assert.equal(queue.queueState(db).pause.detail, 'train');
+    fs.rmSync(path.join(dir, 'train'));
+    setMeta(db, 'pause', '');
+    // The cut reply salvages to {"skip": false, "type": "bugfix"}: no title, so each try is a failed attempt, and after
+    // the last one the edit is stored without the LLM instead of vanishing.
+    assert.equal(await queue.drain(db, { ...settings, gpuBudget: false }, { lock: false, sync: false }), 1);
+    assert.equal(o.calls.filter((c) => c.route === '/api/chat').length, 3);
+    const row = db.prepare("SELECT title, created_at, json_extract(metadata, '$.compressed') compressed FROM observations WHERE session_id = 'se'").get();
+    assert.deepEqual({ ...row }, { title: 'Edit: /x/app.conf', created_at: 5000, compressed: 0 });
+  } finally { o.close(); db.close(); }
 });

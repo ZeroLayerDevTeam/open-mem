@@ -147,7 +147,9 @@ async function processObservation(db, item, provider, settings) {
     const user = [`Project: ${item.project}`, `User request: ${clip(request, 1500)}`, `Tool: ${p.tool}`,
       `Input:\n${clip(p.input, settings.maxToolChars / 2)}`, `Output:\n${clip(p.output, settings.maxToolChars)}`].join('\n\n');
     const reply = await completeJson(provider, OBSERVATION_SYSTEM, user, settings.llmTimeoutMs);
-    obs = reply.skip || !reply.title ? null : reply;
+    // Kept but without a title (a reply salvaged from a cut): retried like any bad reply, never dropped in silence.
+    if (reply.skip !== true && !reply.title) throw new Error('LLM reply has no title');
+    obs = reply.skip ? null : reply;
   }
   if (!obs) return;
   insertObservation(db, {
@@ -244,10 +246,11 @@ export async function generateBrief(db, project, provider, settings) {
   return true;
 }
 
-async function refreshBriefs(db, projects, provider, settings) {
+async function refreshBriefs(db, projects, provider, settings, checkBusy) {
   if (provider.kind === 'none' || !settings.briefEvery) return;
   for (const project of projects) {
     if (!project || recordsSinceBrief(db, project) < settings.briefEvery) continue;
+    if (await checkBusy()) return;
     try {
       if (await generateBrief(db, project, provider, settings)) log('info', `brief refreshed for ${project}`);
     } catch (err) {
@@ -318,7 +321,7 @@ export async function findLessons(db, project, provider, settings) {
 // Briefs, notes review and embeddings: the LLM work that does not come from the queue. Stops when a game starts.
 async function upkeep(db, touched, provider, settings, checkBusy) {
   pruneRecallLog(db);
-  await refreshBriefs(db, touched, provider, settings);
+  await refreshBriefs(db, touched, provider, settings, checkBusy);
   // A client of a shared server reads notes and searches there: the server reviews and embeds, not each client.
   if (settings.mode === 'remote') return;
   if (provider.kind !== 'none' && settings.notesReview) {
@@ -365,6 +368,12 @@ function logOnce(db, key, topic, text, level = 'info', now = Date.now()) {
 }
 
 // A pause lasts while its kind does: the detail of a GPU pause (free memory) changes from one drain to the next.
+// After a timeout or a model failure: nothing goes to the LLM for SLOW_BACKOFF_MS (hooks would retry at once).
+function backOff(db, kind, detail, now = Date.now()) {
+  setMeta(db, 'llm_backoff', JSON.stringify({ until: now + SLOW_BACKOFF_MS, kind, detail }));
+  return { kind, detail };
+}
+
 function notePause(db, pause, now = Date.now()) {
   const prev = readJson(db, 'pause');
   const since = prev?.kind === pause.kind ? prev.since : now;
@@ -462,12 +471,18 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
     try { await push(db, settings); } catch (err) { log('warn', `sync failed, will retry: ${err.message}`); }
   };
   try {
-    let provider = withRecorder(db, forced || await resolveProvider(settings));
+    // A manual pause or a live marker needs nothing from the LLM: Ollama is not even asked (nor started) while one holds,
+    // and that time does not count as LLM downtime.
+    const early = !forced && ['auto', 'ollama'].includes(settings.provider || 'auto') ? (!force && manualPause()) || markerPause(settings) : null;
+    let provider = early ? { kind: 'ollama', model: null, baseUrl: (settings.baseUrl || 'http://127.0.0.1:11434').replace(/\/+$/, '') }
+      : withRecorder(db, forced || await resolveProvider(settings));
     // Only when nothing listens: an Ollama too busy to answer in time (a model loading for another app) is left alone.
-    if (!forced && provider.refused && await autostartOllama(db, settings, start)) provider = withRecorder(db, await resolveProvider(settings));
+    if (!early && !forced && provider.refused && await autostartOllama(db, settings, start)) provider = withRecorder(db, await resolveProvider(settings));
     const local = provider.kind === 'ollama';
     let held = false;
-    if (provider.kind !== 'none') {
+    if (early) {
+      // nothing learned about the LLM
+    } else if (provider.kind !== 'none') {
       setMeta(db, 'llm_seen_at', Date.now());
       endDown(db);
     } else if (provider.unreachable && getMeta(db, 'llm_seen_at')) {
@@ -482,6 +497,8 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
       if (provider.reason) logOnce(db, 'nollm_logged', provider.reason, `drain without LLM: ${provider.reason}`);
     }
     const main = provider.model;
+    // The model open-mem last used: an auto-picked one is open-mem's too when it frees its models during a pause.
+    const used = () => [main, getMeta(db, 'llm_model')];
     // Before every item, the reasons to wait, cheapest first. Only a local LLM shares this machine's GPU.
     const gate = async ({ embed = false } = {}) => {
       if (!force) {
@@ -492,7 +509,8 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
       const marker = markerPause(settings);
       if (marker) return { pause: marker };
       if (!force) {
-        if (Date.now() < Number(getMeta(db, 'llm_slow_until') || 0)) return { pause: { kind: 'slow', detail: getMeta(db, 'llm_slow_reason') || '' } };
+        const backoff = readJson(db, 'llm_backoff');
+        if (backoff && Date.now() < backoff.until) return { pause: { kind: backoff.kind, detail: backoff.detail } };
         const game = await gamesCheck(db, settings, isBusy);
         if (game) return { pause: { kind: 'game', detail: game } };
       }
@@ -500,12 +518,13 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
       return plan(settings, { baseUrl: provider.baseUrl, model: main, embed, backlog: pendingCount(db) });
     };
     const recent = local && !force ? currentPause(db) : null;
-    let pause = recent && Date.now() - recent.at < PAUSE_REUSE_MS ? recent : null;
+    let pause = recent && Date.now() - recent.at < PAUSE_REUSE_MS && (!early || recent.kind === early.kind) ? recent : early;
     let pushedAt = Date.now();
     while (!held && !pause) {
       const g = await gate();
       if (g.pause) { pause = g.pause; break; }
       if (g.model) provider.model = g.model;
+      if (provider.model && provider.model !== getMeta(db, 'llm_model')) setMeta(db, 'llm_model', provider.model);
       if (g.unload?.length) {
         try { await unloadOllama(provider.baseUrl, g.unload); } catch { /* Ollama frees them on its own */ }
       }
@@ -524,20 +543,27 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
         db.prepare('DELETE FROM queue WHERE id = ?').run(item.id);
         handled++;
       } catch (err) {
-        if (isNetworkError(err)) {
-          // Provider went away or is too slow: the item waits for the next run, its attempts untouched.
-          db.prepare("UPDATE queue SET status = 'pending', attempts = attempts - 1, error = ? WHERE id = ?").run(err.message, item.id);
+        const message = String(err.message).slice(0, 500);
+        // The request never ran: Ollama gone, or the GPU guard / a proxy answering 502/503 for it.
+        if (isNetworkError(err) || [502, 503].includes(err.status)) {
+          // The item waits for the next run, its attempts untouched.
+          db.prepare("UPDATE queue SET status = 'pending', attempts = attempts - 1, error = ? WHERE id = ?").run(message, item.id);
           if (err.name === 'TimeoutError') {
             // The GPU is busy with something else: wait a little instead of retrying on the next tool call.
-            setMeta(db, 'llm_slow_until', Date.now() + SLOW_BACKOFF_MS);
-            setMeta(db, 'llm_slow_reason', `no answer from ${provider.model} in ${Math.round(settings.llmTimeoutMs / 1000)} s`);
-            pause = { kind: 'slow', detail: getMeta(db, 'llm_slow_reason') };
-          } else log('warn', `drain paused, provider unreachable: ${err.message}`);
+            pause = backOff(db, 'slow', `no answer from ${provider.model} in ${Math.round(settings.llmTimeoutMs / 1000)} s`);
+          } else log('warn', `drain paused, provider unavailable: ${message}`);
           break;
         }
-        log('warn', `queue item ${item.id} (${item.kind}) attempt ${item.attempts}: ${err.message}`);
+        log('warn', `queue item ${item.id} (${item.kind}) attempt ${item.attempts}: ${message}`);
+        if (err.status >= 500 && item.attempts < MAX_ATTEMPTS) {
+          // Ollama failed to run the model (out of memory, a load error): wait a little rather than burn the attempts
+          // in a row. Still counted, so an item that always fails cannot hold the head of the queue forever.
+          db.prepare("UPDATE queue SET status = 'pending', error = ? WHERE id = ?").run(message, item.id);
+          pause = backOff(db, 'error', message.slice(0, 160));
+          break;
+        }
         if (item.attempts < MAX_ATTEMPTS) {
-          db.prepare("UPDATE queue SET status = 'pending', error = ? WHERE id = ?").run(String(err.message).slice(0, 500), item.id);
+          db.prepare("UPDATE queue SET status = 'pending', error = ? WHERE id = ?").run(message, item.id);
           continue;
         }
         // The LLM keeps failing on this item (bad JSON, too long…): store it without the LLM rather than lose it.
@@ -554,7 +580,7 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
       notePause(db, pause);
       // Free the GPU of open-mem's own models, never of another app's: they share this Ollama.
       if (local && pause.kind !== 'slow') {
-        try { await unloadOllama(provider.baseUrl, ownModels(settings, main)); } catch { /* Ollama already gone */ }
+        try { await unloadOllama(provider.baseUrl, ownModels(settings, ...used())); } catch { /* Ollama already gone */ }
       }
     } else if (!pause) {
       endPause(db);

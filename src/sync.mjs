@@ -10,7 +10,7 @@ const BATCH = 400;
 const MAX_ROWS = 2000; // per kind, per request (server side)
 const STATUS_EVERY_MS = 60000;
 const STATUS_KEEP_MS = 14 * 864e5;
-const PAUSE_KINDS = new Set(['manual', 'marker', 'game', 'gpu', 'slots', 'slow']);
+const PAUSE_KINDS = new Set(['manual', 'marker', 'game', 'gpu', 'slots', 'slow', 'error']);
 
 // --- client ------------------------------------------------------------------
 export async function remoteFetch(settings, method, route, body, timeoutMs = settings.remoteTimeoutMs) {

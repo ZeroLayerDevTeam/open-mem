@@ -307,6 +307,7 @@ const ES = {
   'Not enough free GPU memory': 'No hay memoria de GPU libre suficiente',
   "Ollama is full with other apps' models": 'Ollama está lleno con modelos de otras aplicaciones',
   'The LLM is too slow right now, trying again in a few minutes': 'El LLM va demasiado lento ahora, se reintenta en unos minutos',
+  'The LLM failed, trying again in a few minutes': 'El LLM ha fallado, se reintenta en unos minutos',
   'Waiting for the LLM': 'Esperando al LLM',
   'Not answering since {when}: {reason}': 'No responde desde {when}: {reason}',
   'Since {when}: {reason}': 'Desde {when}: {reason}',

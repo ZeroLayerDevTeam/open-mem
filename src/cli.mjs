@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { addDevice, createAdminToken, hasAdminToken, listDevices, removeDevice } from './auth.mjs';
 import { DEFAULT_SETTINGS, dataDir, dataPath, deviceName, loadSettings, log, saveSettings, VERSION } from './config.mjs';
-import { backupDb, openDb } from './db.mjs';
+import { backupDb, getMeta, openDb } from './db.mjs';
 import { claudeMemDbPath, installedPluginIds, importClaudeMem, uninstallClaudeMem } from './claudemem.mjs';
 import { busyReason } from './busy.mjs';
 import { clearPause, setPause } from './budget.mjs';
@@ -167,7 +167,7 @@ async function main() {
       const reason = await busyReason(settings);
       let unloaded = [];
       if (reason && flag(args, '--unload') && ['auto', 'ollama'].includes(settings.provider || 'auto')) {
-        try { unloaded = await unloadOllama(settings.baseUrl, ownModels(settings)); } catch { /* Ollama not running */ }
+        try { unloaded = await unloadOllama(settings.baseUrl, ownModels(settings, getMeta(db, 'llm_model'))); } catch { /* Ollama not running */ }
       }
       console.log(reason ? `busy: ${reason}${unloaded.length ? ` (unloaded ${unloaded.join(', ')})` : ''}` : 'idle');
       process.exitCode = reason ? 0 : 1;

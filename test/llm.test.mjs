@@ -97,7 +97,7 @@ test('call stats: speed, latency percentiles, failures and time buckets', () => 
 test('engine status reads Ollama, the queue and the index; actions retry, load and pin models', async () => {
   const db = openDb(path.join(TMP, 'engine.db'));
   const o = await fakeOllama();
-  const settings = { ...DEFAULT_SETTINGS, baseUrl: o.url, embedModel: 'embeddinggemma', pauseWhenBusy: false };
+  const settings = { ...DEFAULT_SETTINGS, baseUrl: o.url, embedModel: 'embeddinggemma', pauseWhenBusy: false, busyFiles: [] };
   try {
     db.prepare("INSERT INTO queue (kind, session_id, project, payload, status, attempts, error, created_at) VALUES ('observation', 's', 'p', ?, 'failed', 3, 'boom', 1)")
       .run(JSON.stringify({ tool: 'Bash', input: { command: 'git status' } }));
