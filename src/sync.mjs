@@ -4,7 +4,7 @@ import { log } from './config.mjs';
 import { getMeta, setMeta, transaction } from './db.mjs';
 import { gpus, storeGpuReport } from './gpu.mjs';
 import { upsertSyncedItem } from './items.mjs';
-import { asText, insertObservation, upsertSummary } from './store.mjs';
+import { asText, upsertObservation, upsertSummary } from './store.mjs';
 
 const BATCH = 400;
 const MAX_ROWS = 2000; // per kind, per request (server side)
@@ -139,7 +139,8 @@ export function ingest(db, device, body) {
       counts.sessions++;
     }
     for (const o of arr(body.observations)) {
-      if (insertObservation(db, { ...o, device: o.device || device, source: tag(o.source, device), source_id: o.source_id || `obs:${o.id}` })) counts.observations++;
+      // A row pushed again (upgraded by a backfill) replaces the server's copy.
+      if (upsertObservation(db, { ...o, device: o.device || device, source: tag(o.source, device), source_id: o.source_id || `obs:${o.id}` })) counts.observations++;
     }
     for (const s of arr(body.summaries)) {
       upsertSummary(db, { ...s, device: s.device || device, source: tag(s.source, device), source_id: s.source_id || `sum:${s.id}` });
