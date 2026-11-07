@@ -78,6 +78,14 @@ function setup() {
   return { db, accounts, raw };
 }
 
+test('long tool inputs and outputs are cut inside their structure', () => {
+  const v = backfill.clipValue({ file_path: '/x/big.js', content: 'x'.repeat(50), nested: [{ s: 'y'.repeat(50) }] }, 10);
+  assert.equal(v.file_path, '/x/big.js');
+  assert.match(v.content, /^x{10}\n…\[40 chars cut\]$/);
+  assert.match(v.nested[0].s, /^y{10}/);
+  assert.equal(backfill.clipValue(undefined, 10), '');
+});
+
 test('transcript folders: a folder of accounts, a config folder or a projects folder', () => {
   const { db, accounts } = setup();
   db.close();

@@ -103,10 +103,14 @@ export function readTranscript(file) {
   return { calls, texts };
 }
 
-// The queue keeps only what the LLM reads (maxToolChars): a transcript's tool output can be megabytes.
-function clipValue(v, max) {
-  const s = typeof v === 'string' ? v : JSON.stringify(v ?? '');
-  return s.length > max ? `${s.slice(0, max)}\n…[${s.length - max} chars cut]` : (typeof v === 'string' ? v : v ?? '');
+// The queue keeps only what the LLM reads (maxToolChars): a transcript's tool output can be megabytes. Long strings are
+// cut inside the structure, so fields such as file_path stay where processObservation looks for them.
+export function clipValue(v, max, depth = 0) {
+  if (typeof v === 'string') return v.length > max ? `${v.slice(0, max)}\n…[${v.length - max} chars cut]` : v;
+  if (v == null || typeof v !== 'object') return v ?? '';
+  if (depth > 4) return clipValue(JSON.stringify(v), max);
+  if (Array.isArray(v)) return v.slice(0, 50).map((x) => clipValue(x, max, depth + 1));
+  return Object.fromEntries(Object.entries(v).slice(0, 50).map(([k, x]) => [k, clipValue(x, max, depth + 1)]));
 }
 
 // What a backfill of [from, to] would queue. Pure over the database and the transcripts: `apply` queues it.
