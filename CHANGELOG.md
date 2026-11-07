@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `cli backfill --from T --to T [--dir D]... [--dry-run]`: queues again, from Claude Code's transcripts, what a time window lost while the LLM was down: observations stored raw (upgraded in place, same id and time, once the LLM answers), calls the no-LLM path dropped (reads, searches, MCP calls) and turn summaries without a model or missing (each with the final message of its own turn). Records keep their capture time, nothing already in memory with the LLM or in the queue is queued twice (by tool_use_id), failed calls and skipped tools are left out, and a session resumed from another account is read from its most complete transcript. It only queues: the drainer runs these after what already waits, under the same pause and GPU rules. `--dir` takes config folders, projects folders or a folder of accounts (default `CLAUDE_CONFIG_DIR` and `~/.claude`).
+- A shared server takes an observation a client pushes again (an upgraded one) as a replacement of its copy, keeping its id, instead of ignoring it.
+
 ## 0.8.0
 
 - README and the installers (`install.ps1`, `install.sh`) install from the new GitHub repo `ZeroLayerDevTeam/open-mem`.

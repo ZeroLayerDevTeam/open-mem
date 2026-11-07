@@ -8,6 +8,7 @@ import { backupDb, getMeta, openDb } from './db.mjs';
 import { claudeMemDbPath, installedPluginIds, importClaudeMem, uninstallClaudeMem } from './claudemem.mjs';
 import { busyReason } from './busy.mjs';
 import { clearPause, setPause } from './budget.mjs';
+import { applyBackfill, planBackfill, projectRoots } from './backfill.mjs';
 import { ownModels, resolveProvider, unloadOllama } from './llm.mjs';
 import { drain, drainerPid, endPause, findLessons, generateBrief, queueState, reviewNotes, spawnDrainer } from './queue.mjs';
 import { withRecorder } from './llmstats.mjs';
@@ -33,6 +34,10 @@ Usage: node cli.mjs <command> [options]
   drain [--force]                Process the pending queue now (--force: even while a game runs or paused by hand)
   pause [--hours N] [reason]     Keep the queue waiting (and the GPU guard closed) until resume, or for N hours
   resume                         End a pause set with pause
+  backfill --from T --to T [--dir D]... [--dry-run]
+                                 Queue again, from Claude Code's transcripts, what the window T..T lost while the LLM
+                                 was down (raw observations, dropped calls, summaries without a model). Only queues.
+                                 --dir: config or projects folders (default CLAUDE_CONFIG_DIR and ~/.claude)
   busy [--unload]                Is a game running? (exit 0 = busy) --unload frees open-mem's Ollama models then
   search <query> [--project P]   Search memory from the terminal
   redact                         Re-scan stored memory and redact secrets
@@ -162,6 +167,26 @@ async function main() {
         log('info', 'queue resumed by hand');
         endPause(db); // drainers reuse a recent pause: forget it now
         spawnDrainer();
+      }
+    } else if (cmd === 'backfill') {
+      const dryRun = flag(args, '--dry-run');
+      const dirs = [];
+      for (let d; (d = option(args, '--dir'));) dirs.push(d);
+      const [from, to] = [option(args, '--from'), option(args, '--to')].map((v) => Date.parse(v ?? ''));
+      if (!from || !to || from >= to) throw new Error('backfill needs --from and --to (dates or ISO times, from before to)');
+      const roots = projectRoots(dirs);
+      const plan = planBackfill(db, settings, { from, to, roots });
+      const c = plan.counts;
+      console.log(`window ${new Date(from).toISOString()} .. ${new Date(to).toISOString()} · transcript folders ${roots.length}`);
+      console.log(`sessions ${c.sessions}: ${c.transcripts} with a transcript, ${c.missing} without`);
+      console.log(`tool calls ${c.calls}: ${c.inMemory} already in memory with the LLM, ${c.queued} already queued, ${c.skippedTools} skipped tools, ${c.errors} failed calls`);
+      console.log(`to queue: ${c.upgrade} raw observations to upgrade, ${c.add} dropped calls, ${c.summariesRedo} summaries without a model, ${c.summariesAdd} missing summaries (${c.summariesDone} done or queued)`);
+      // Only queues: no drainer is started, the queue's pause and GPU rules decide when these run.
+      if (dryRun) console.log(`dry run: nothing queued (${plan.observations.length + plan.summaries.length} items would be)`);
+      else {
+        const n = applyBackfill(db, plan);
+        log('info', `backfill queued ${n} item(s) for ${new Date(from).toISOString()} .. ${new Date(to).toISOString()}`);
+        console.log(`queued ${n} item(s): they run after the items already waiting, whenever the queue is not paused`);
       }
     } else if (cmd === 'busy') {
       const reason = await busyReason(settings);

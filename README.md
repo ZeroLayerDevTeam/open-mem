@@ -84,7 +84,7 @@ A local model also competes with other GPU work: model training, another app's m
 - **Manual pause:** `node "$OM" pause [--hours N] [reason]` holds the queue (and closes the GPU guard) until `node "$OM" resume`.
 - A timeout means the GPU is busy elsewhere: the item keeps its attempts and the queue waits 2 minutes before the next call.
 
-The queue only ever waits: nothing is dropped. The web viewer's Progress page shows each machine's queue and why it waits (on a shared server, as reported by each client), and records land on the day they were captured once processed.
+The queue only ever waits: nothing is dropped. Records that an older version stored without the LLM (or dropped) during an outage can be queued again from Claude Code's transcripts with `backfill` (see CLI); `--dry-run` counts them first. The web viewer's Progress page shows each machine's queue and why it waits (on a shared server, as reported by each client), and records land on the day they were captured once processed.
 
 ## How it works
 
@@ -192,6 +192,8 @@ node "$OM" brief my-project       # rewrite a project brief now
 node "$OM" drain [--force] | sync # process the queue (--force: even while a game runs or paused by hand) / push to the server now
 node "$OM" pause [--hours N] [reason] | resume  # hold the queue and close the GPU guard, until resume or for N hours
 node "$OM" busy [--unload]        # is a game running? (exit 0 = busy; --unload frees open-mem's models)
+node "$OM" backfill --from 2026-11-02T08:00Z --to 2026-11-03T22:00Z [--dir ~/.claude] [--dry-run]
+                                  # queue again from the transcripts what a window lost while the LLM was down
 node "$OM" embed [--all]          # compute missing embeddings now (--all: no per-run limit)
 node "$OM" review-notes my-project  # check a project's notes for contradictions now
 node "$OM" lessons my-project     # look for mistakes fixed in several sessions now
