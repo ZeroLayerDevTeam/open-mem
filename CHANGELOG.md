@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
 
 - README and the installers (`install.ps1`, `install.sh`) install from the new GitHub repo `ZeroLayerDevTeam/open-mem`.
 - open-mem never unloads another app's Ollama models any more. A paused drain (every hook, every few seconds), the GPU guard (every `guardPollSeconds`), `cli busy --unload` and the web viewer's "Free the memory" button unloaded every model Ollama had loaded, so a job sharing that Ollama (a dataset build) reloaded its model on almost every call. They now unload only open-mem's models (`model`, `fallbackModels`, `embedModel`, the picked model and, for the guard, the models the server used).
