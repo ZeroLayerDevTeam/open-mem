@@ -78,6 +78,8 @@ async function sessionStart(db, input, settings, project) {
   if (settings.guardAllow.length && !pidAlive(dataPath('guard.pid'))) spawnCli('guard', '--quiet');
   const hint = await setupHint(db, settings);
   if (hint) notices.push(hint);
+  const down = m.downNotice(db);
+  if (down) notices.push(down);
 
   const args = { project, cwd: input.cwd, ...(firstToday ? { recap: { until: dayStart, tz: new Date().getTimezoneOffset() } } : {}) };
   let { result: ctx, fallback } = await m.call('context', args, { db: () => db, settings });

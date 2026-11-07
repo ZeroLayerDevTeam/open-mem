@@ -13,9 +13,24 @@ export const DEFAULT_SETTINGS = {
   baseUrl: '',
   apiKey: '',
   llmTimeoutMs: 120000,
-  // Once an LLM has been seen, a queue item waits this long for it to come back before it is stored
-  // without one (the no-LLM path keeps only edits and commands).
+  // Once an LLM has been seen, the queue waits for it while it is down. Only after it stays unreachable for this long
+  // (counting only the time this machine was in use) is the queue stored without it (the no-LLM path keeps only edits
+  // and commands). A pause never counts.
   llmWaitHours: 72,
+  // Start the local Ollama when it does not answer (Windows and macOS, loopback baseUrl only), at most every 10 minutes.
+  ollamaAutostart: true,
+  // Smaller chat models, best first, used instead of `model` when it does not fit in the free GPU memory, while another
+  // app has a model loaded in Ollama, or while more than backlogItems wait in the queue (to catch up faster).
+  fallbackModels: [],
+  backlogItems: 500,
+  // GPU budget for a local Ollama (needs nvidia-smi): open-mem only sends work when its model fits in the free video
+  // memory minus OLLAMA_GPU_OVERHEAD and this reserve, and when loading it would not push another app's model out of
+  // Ollama (OLLAMA_MAX_LOADED_MODELS).
+  gpuBudget: true,
+  gpuReserveMb: 1536,
+  // Files or folders of marker files: while one exists, nothing is sent to the local Ollama and open-mem frees only its
+  // own models. A JSON marker with `stale_after_s` counts only while its heartbeat (or mtime) is that fresh.
+  busyFiles: ['~/.gpu-busy'],
   // How long Ollama keeps the model in (V)RAM after the last call. Long enough that the next drain finds it loaded
   // instead of reloading it; pauseWhenBusy (and the GPU guard) still unload it as soon as a game starts.
   llmKeepAlive: '10m',
@@ -26,7 +41,7 @@ export const DEFAULT_SETTINGS = {
   busyPaths: ['/steamapps/common/', '/Epic Games/', '/XboxGames/', '/Riot Games/', '/EA Games/', '/GOG Galaxy/Games/',
     '/Ubisoft Game Launcher/games/'],
   // Launchers and background apps that live in those folders but are not games.
-  busyIgnore: ['/wallpaper_engine/', '/Epic Games/Launcher/', '/Riot Games/Riot Client/'],
+  busyIgnore: ['/wallpaper_engine/', '/Epic Games/Launcher/', '/Epic Games/Epic Online Services/', '/Riot Games/Riot Client/'],
   // Tools whose calls are never recorded.
   skipTools: ['TodoWrite', 'AskUserQuestion', 'ListMcpResourcesTool', 'Skill', 'ToolSearch', 'SlashCommand'],
   maxToolChars: 6000,
@@ -130,10 +145,17 @@ export function projectFromCwd(cwd) {
   return base || 'default';
 }
 
+const LOG_MAX_BYTES = 5 * 1024 * 1024;
+
+// One rotated copy (open-mem.log.1): the log never grows past about twice LOG_MAX_BYTES.
 export function log(level, message) {
   try {
     ensureDataDir();
-    fs.appendFileSync(dataPath('logs', 'open-mem.log'), `${new Date().toISOString()} [${level}] ${message}\n`);
+    const file = dataPath('logs', 'open-mem.log');
+    try {
+      if (fs.statSync(file).size > LOG_MAX_BYTES) fs.renameSync(file, `${file}.1`);
+    } catch { /* no log yet, or another process rotated it first */ }
+    fs.appendFileSync(file, `${new Date().toISOString()} [${level}] ${message}\n`);
   } catch {
     // Logging must never break a hook.
   }

@@ -76,8 +76,8 @@ export const countPending = (db) => db.prepare(`SELECT
   + (SELECT count(*) FROM summaries s WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.ref = 'S' || s.id))
   + (SELECT count(*) FROM items i WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.ref = 'I' || i.id)) n`).get().n;
 
-// Embeds up to `max` records without a vector, newest first, in batches. `stop()` is checked between batches
-// (a game started). Returns how many were embedded.
+// Embeds up to `max` records without a vector, newest first, in batches. `stop()` is checked before each batch
+// (a game started, the GPU is needed elsewhere). Returns how many were embedded.
 export async function embedPending(db, settings, { max = 2000, batch = 32, stop = async () => false } = {}) {
   if (!embedEnabled(settings)) return 0;
   // Vectors of another model cannot be compared: a model change starts over.
@@ -86,7 +86,7 @@ export async function embedPending(db, settings, { max = 2000, batch = 32, stop 
   let done = 0;
   while (done < max) {
     const rows = pendingEmbeddings(db, Math.min(batch, max - done));
-    if (!rows.length) break;
+    if (!rows.length || await stop()) break;
     const vecs = await embed(settings, rows.map((r) => clip(r.text, 2000)), 120000, (s) => recordCall(db, s));
     db.exec('BEGIN IMMEDIATE');
     try {
@@ -97,7 +97,6 @@ export async function embedPending(db, settings, { max = 2000, batch = 32, stop 
       throw err;
     }
     done += rows.length;
-    if (await stop()) break;
   }
   return done;
 }

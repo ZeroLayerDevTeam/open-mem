@@ -165,17 +165,19 @@ test('server: the LLM page needs the admin; actions are POST, origin-checked, ad
   } finally { server.close(); db.close(); }
 });
 
-test('a machine that runs Ollama reports its GPU at most once a minute; the server keeps it per device', async () => {
+test('a machine that runs Ollama reports its GPU with its status; the server keeps it per device', async () => {
   const gpu = await import('../src/gpu.mjs');
+  const { reportStatus } = await import('../src/sync.mjs');
   const db = openDb(path.join(TMP, 'gpu.db'));
   try {
     const sent = [];
     const send = async (...args) => { sent.push(args); };
+    const queue = { pending: 0, pause: null, down: null };
     const read = async () => ({ list: [{ index: 0, name: 'RTX 4060 Ti', memUsedMb: 900, memTotalMb: 16380, util: 3, temp: 41, powerW: 12 }], error: null });
-    assert.equal(await gpu.reportGpu(db, send, { now: 1e6, read }), true);
-    assert.equal(await gpu.reportGpu(db, send, { now: 1e6 + 30000, read }), false);
-    assert.equal(await gpu.reportGpu(db, send, { now: 1e6 + 61000, read: async () => ({ list: null, error: 'missing' }) }), false);
-    assert.deepEqual(sent.map(([m, r]) => `${m} ${r}`), ['POST /api/gpu']);
+    assert.equal(await reportStatus(db, send, { queue, withGpus: true, now: 1e6, read }), true);
+    assert.equal(await reportStatus(db, send, { queue, withGpus: true, now: 1e6 + 30000, read }), false);
+    assert.equal(await reportStatus(db, send, { queue, withGpus: true, now: 1e6 + 61000, read: async () => ({ list: null, error: 'missing' }) }), true);
+    assert.deepEqual(sent.map(([m, r, body]) => `${m} ${r} ${body.gpus?.[0]?.name ?? '-'}`), ['POST /api/client RTX 4060 Ti', 'POST /api/client -']);
 
     assert.equal(gpu.storeGpuReport(db, 'torre', { gpus: [{ name: 'x'.repeat(200), memUsedMb: '5', temp: 40, extra: 1 }] }, 5000), 1);
     assert.deepEqual(gpu.gpuReports(db, 6000), [{ device: 'torre', at: 5000,

@@ -106,6 +106,25 @@ export async function ensureRunning(binary, baseUrl = OLLAMA_URL, waitMs = 30000
   return false;
 }
 
+// Starts an installed Ollama that is not running, the way a login would. Returns how, or null when it cannot.
+// Windows: the tray app through explorer.exe, so it gets the user's current environment (OLLAMA_* variables set
+// after this process started included). macOS: the app. Linux runs Ollama as a system service: not ours to start.
+export async function startOllama(platform = process.platform, env = process.env) {
+  const launch = (cmd, args) => spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true }).on('error', () => {}).unref();
+  if (platform === 'win32') {
+    const app = path.join(env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'Ollama', 'ollama app.exe');
+    if (fs.existsSync(app)) { launch(path.join(env.SystemRoot || 'C:\\Windows', 'explorer.exe'), [app]); return app; }
+  } else if (platform === 'darwin' && fs.existsSync('/Applications/Ollama.app')) {
+    launch('open', ['-a', 'Ollama']);
+    return 'Ollama.app';
+  }
+  if (platform === 'linux') return null;
+  const binary = await findOllama(platform, env);
+  if (!binary) return null;
+  launch(binary, ['serve']);
+  return `${binary} serve`;
+}
+
 // Download a model through Ollama's API (no CLI needed); onProgress(fraction 0-1 or null, status).
 export async function pullModel(name, baseUrl = OLLAMA_URL, onProgress = () => {}) {
   const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/api/pull`, {
