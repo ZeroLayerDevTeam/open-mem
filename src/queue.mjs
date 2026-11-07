@@ -14,7 +14,7 @@ import { withRecorder } from './llmstats.mjs';
 import { sessionMeta } from './meta.mjs';
 import { redact } from './redact.mjs';
 import { ollamaModels, startOllama } from './setup.mjs';
-import { clip as clipLine, insertObservation, lessons, lessonsKey, notesReview, pruneRecallLog, reviewKey, promptText, sessionInfo, turnObservations, upsertSummary } from './store.mjs';
+import { clip as clipLine, insertObservation, lessons, lessonsKey, notesReview, pruneRecallLog, reviewKey, promptText, sessionInfo, turnObservations, upgradeObservation, upsertSummary } from './store.mjs';
 import { embedPending } from './semantic.mjs';
 import { pushPending, remoteFetch, reportStatus } from './sync.mjs';
 
@@ -138,6 +138,8 @@ function rawObservation(p) {
 
 async function processObservation(db, item, provider, settings) {
   const p = JSON.parse(item.payload);
+  // A backfilled raw observation only ever gets better: without the LLM, the raw row it would replace stays as it is.
+  if (p.upgrade && provider.kind === 'none') return;
   const files = filesOf(p.tool, p.input);
   let obs;
   if (provider.kind === 'none') {
@@ -152,6 +154,10 @@ async function processObservation(db, item, provider, settings) {
     obs = reply.skip ? null : reply;
   }
   if (!obs) return;
+  if (p.upgrade) {
+    upgradeObservation(db, p.upgrade, obs, provider.model || null); // same id and time; pushed again
+    return;
+  }
   insertObservation(db, {
     ...sessionMeta(sessionInfo(db, item.session_id), settings),
     session_id: item.session_id, project: item.project, prompt_number: p.prompt_number, tool: p.tool,
@@ -194,7 +200,8 @@ async function processSummary(db, item, provider, settings) {
   } else {
     const user = [`Project: ${item.project}`, `User request: ${clip(request, 2000)}`,
       `Observations:\n${clip(obs.map((o) => `- [${o.type}] ${o.title}: ${o.narrative || ''}`).join('\n') || '(none)', SUMMARY_OBS_CHARS)}`,
-      `Assistant final message:\n${clip(lastAssistantText(p.transcript_path), 3000)}`].join('\n\n');
+      // A backfilled turn carries its own final message: the transcript's last one belongs to a later turn.
+      `Assistant final message:\n${clip(p.assistant_text ?? lastAssistantText(p.transcript_path), 3000)}`].join('\n\n');
     const reply = await completeJson(provider, SUMMARY_SYSTEM, user, settings.llmTimeoutMs);
     if (reply.skip) return;
     sum = reply;

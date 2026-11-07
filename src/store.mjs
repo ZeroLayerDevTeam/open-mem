@@ -28,6 +28,27 @@ function insertRow(db, table, cols, row, conflict) {
 }
 
 export const insertObservation = (db, row, conflict = 'OR IGNORE') => insertRow(db, 'observations', OBS_COLS, row, conflict);
+
+// What the LLM writes about a tool call; the rest of a row (session, time, files, source) never changes.
+const OBS_CONTENT = ['type', 'title', 'subtitle', 'narrative', 'facts', 'concepts', 'model', 'metadata'];
+
+// Server side of sync: a row a client pushes again (an observation it upgraded) replaces the copy, keeping its id.
+export function upsertObservation(db, row) {
+  const values = OBS_COLS.map((c) => (NUMERIC.has(c) ? (row[c] == null ? null : Number(row[c])) : c === 'source' ? row.source || 'native' : asText(row[c])));
+  const res = db.prepare(`INSERT INTO observations (${OBS_COLS.join(', ')}) VALUES (${OBS_COLS.map(() => '?').join(', ')})
+    ON CONFLICT (source, source_id) DO UPDATE SET ${OBS_CONTENT.map((c) => `${c} = excluded.${c}`).join(', ')}`).run(...values);
+  return res.changes > 0;
+}
+
+// A raw observation (stored without the LLM) gets the LLM's version in place: same id and time, pushed again.
+// Returns false when the row is gone or already has an LLM version.
+export function upgradeObservation(db, id, obs, model) {
+  const res = db.prepare(`UPDATE observations SET type = ?, title = ?, subtitle = ?, narrative = ?, facts = ?, concepts = ?, model = ?,
+      metadata = json_set(COALESCE(metadata, '{}'), '$.compressed', json('true'), '$.backfilled', json('true')), synced_at = NULL
+    WHERE id = ? AND json_extract(metadata, '$.compressed') = 0`)
+    .run(asText(obs.type), asText(obs.title), asText(obs.subtitle), asText(obs.narrative), asText(obs.facts), asText(obs.concepts), model ?? null, id);
+  return res.changes > 0;
+}
 export const insertSummary = (db, row, conflict = 'OR IGNORE') => insertRow(db, 'summaries', SUM_COLS, row, conflict);
 
 export function upsertSummary(db, row) {
