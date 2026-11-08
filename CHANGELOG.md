@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.6
+
+- GPU budget: with the chat model loaded and the embedding model not, only the embedding model has to fit in the memory free now. 0.9.5 asked for both models, so an unloaded embedding model sent the plan back to counting the loaded chat model a second time, and the queue paused ("needs 9590 MiB") before it could load the embedding model.
+
 ## 0.9.5
 
 - A drain that uses a local Ollama loads the embedding model before its first item and keeps it loaded while it works (a call every 4 minutes, 15 minutes keep-alive). Ollama does not load a model while another one it holds is busy, so with the chat model busy all the time the shared server's semantic indexing, which goes through this Ollama, timed out every 10 minutes. If the model takes more than 30 s to load, the drain goes on without it.
