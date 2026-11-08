@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.5
+
+- A drain that uses a local Ollama loads the embedding model before its first item and keeps it loaded while it works (a call every 4 minutes, 15 minutes keep-alive). Ollama does not load a model while another one it holds is busy, so with the chat model busy all the time the shared server's semantic indexing, which goes through this Ollama, timed out every 10 minutes. If the model takes more than 30 s to load, the drain goes on without it.
+
 ## 0.9.4
 
 - The GPU budget no longer pauses the queue for a model that is already loaded: it counted that model's memory a second time on top of the reserve, so a model loaded with a large context (by the context compactor) paused one drainer while another kept summarising.

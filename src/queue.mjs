@@ -15,7 +15,7 @@ import { sessionMeta } from './meta.mjs';
 import { redact } from './redact.mjs';
 import { ollamaModels, startOllama } from './setup.mjs';
 import { clip as clipLine, insertObservation, lessons, lessonsKey, notesReview, pruneRecallLog, reviewKey, promptText, sessionInfo, turnObservations, upgradeObservation, upsertSummary } from './store.mjs';
-import { embedPending } from './semantic.mjs';
+import { embedEnabled, embedPending, warmEmbed } from './semantic.mjs';
 import { pushPending, remoteFetch, reportStatus } from './sync.mjs';
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cli.mjs');
@@ -37,6 +37,7 @@ export const PAUSE_FRESH_MS = 20 * 60000;
 const DOWN_GAP_MS = 15 * 60000;
 // After a timeout the GPU is busy elsewhere: try again later, not on the next hook. The wait grows with the timeouts in
 // a row (15 s, 30 s, 60 s, then 2 min) and starts over after an answer: a short wait loses little when Ollama is free.
+const WARM_EVERY_MS = 4 * 60000; // the embedding model stays loaded 15 min after each call
 const SLOW_BACKOFF_STEPS_MS = [15000, 30000, 60000, 120000];
 const ERROR_BACKOFF_MS = 2 * 60000;
 const AUTOSTART_EVERY_MS = 10 * 60000;
@@ -493,7 +494,7 @@ async function gamesCheck(db, settings, isBusy) {
 // `force` (asked for from the web viewer): process even while a game runs or the queue is paused by hand. Marker files
 // and the GPU budget still apply: ignoring them could take the GPU from the job that holds it.
 export async function drain(db, settings, { lock = true, provider: forced, sync = true, busy: isBusy = busyReason, force = false,
-  pushEveryMs = PUSH_EVERY_MS, reportEveryMs = REPORT_EVERY_MS, push = pushPending, status = reportStatus, plan = planGpu, start = startOllama } = {}) {
+  pushEveryMs = PUSH_EVERY_MS, reportEveryMs = REPORT_EVERY_MS, push = pushPending, status = reportStatus, plan = planGpu, start = startOllama, warm = warmEmbed } = {}) {
   if (lock && !acquireLock()) return 0;
   let handled = 0;
   const touched = new Set();
@@ -537,7 +538,9 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
     // The model open-mem last used: an auto-picked one is open-mem's too when it frees its models during a pause.
     const used = () => [main, getMeta(db, 'llm_model')];
     // Before every item, the reasons to wait, cheapest first. Only a local LLM shares this machine's GPU.
-    const gate = async ({ embed = false } = {}) => {
+    // Keep the embedding model loaded beside the chat model (the plan would unload it as unused otherwise).
+    let warmOn = local && embedEnabled(settings) && pendingCount(db) > 0;
+    const gate = async ({ embed = warmOn } = {}) => {
       if (!force) {
         const manual = manualPause();
         if (manual) return { pause: manual };
@@ -644,7 +647,26 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
     };
     // Without an LLM every item is a quick local write: one worker keeps the order.
     const workers = provider.kind === 'none' ? 1 : Math.max(1, Math.min(16, Math.floor(Number(settings.llmParallel)) || 1));
-    await Promise.all(Array.from({ length: workers }, worker));
+    let warmTimer = null;
+    if (warmOn && !held && !pause) {
+      const g = await gate();
+      if (g.pause) pause = g.pause;
+      else {
+        try {
+          await warm(settings);
+          warmTimer = setInterval(() => { warm(settings).catch(() => { /* next time */ }); }, WARM_EVERY_MS);
+          warmTimer.unref?.();
+        } catch (err) {
+          warmOn = false; // too slow to load now (another app holds the GPU): drain without it
+          log('warn', `embedding model not loaded: ${err.message}`);
+        }
+      }
+    }
+    try {
+      await Promise.all(Array.from({ length: workers }, worker));
+    } finally {
+      if (warmTimer) clearInterval(warmTimer);
+    }
     if (pause && pause !== recent) {
       notePause(db, pause);
       // Free the GPU of open-mem's own models, never of another app's: they share this Ollama.

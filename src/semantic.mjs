@@ -54,6 +54,20 @@ export async function embed(settings, texts, timeoutMs = 120000, record = null) 
   return body.embeddings.map(toVector);
 }
 
+// Loads the embedding model and keeps it loaded `keepAlive`. Ollama does not load a model while another one it holds
+// is busy, so a drain that keeps the chat model busy loads it first, while that model is idle, then keeps it warm: the
+// server's indexing (every few minutes, through this Ollama) would otherwise wait for a free moment that never comes.
+export async function warmEmbed(settings, { timeoutMs = 30000, keepAlive = '15m' } = {}) {
+  const res = await fetch(`${baseUrl(settings)}/api/embed`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...ollamaAuth(settings.apiKey) },
+    body: JSON.stringify({ model: settings.embedModel, input: ['.'], keep_alive: keepAlive, truncate: true }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  await res.text();
+  if (!res.ok) throw new Error(`HTTP ${res.status} from Ollama embed`);
+}
+
 // --- what gets embedded -------------------------------------------------------------------------
 const TEXT_SQL = {
   obs: `SELECT o.id, 'obs' kind, o.project, o.type || ': ' || COALESCE(o.title, '') || '. ' || COALESCE(o.subtitle, '') || ' ' || COALESCE(o.narrative, '') text
