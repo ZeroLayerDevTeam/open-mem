@@ -106,6 +106,9 @@ test('GPU budget: the best model that fits, a lighter one while others share Oll
 test('GPU budget: the model already loaded is used even when the free memory looks short', async () => {
   // 12b loaded with a large context (another app asked for it): 11.2 GiB used of 12, the count says it would not fit.
   assert.deepEqual(await plan({ fallbackModels: [] }, {}, { loaded: [['gemma3:12b', 9]], usedMb: 11500 }), { model: 'gemma3:12b', unload: [] });
+  // Loaded, the embedder not: only the embedder has to fit in what is free now (12288 - 10000 > 0.6 GiB * factor + reserve?).
+  assert.equal((await plan({ fallbackModels: [], embedModel: 'embeddinggemma' }, { embed: true }, { loaded: [['gemma3:12b', 9]], usedMb: 9500 })).model, 'gemma3:12b');
+  assert.equal((await plan({ fallbackModels: [], embedModel: 'embeddinggemma' }, { embed: true }, { loaded: [['gemma3:12b', 9]], usedMb: 12200 })).pause?.kind, 'gpu');
   // Not loaded: the free memory decides, as before.
   assert.equal((await plan({ fallbackModels: [] }, {}, { usedMb: 11500 })).pause?.kind, 'gpu');
 });
