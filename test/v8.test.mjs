@@ -122,6 +122,31 @@ test('drain: an answer clears a pause another drainer noted', async () => {
   } finally { o.close(); db.close(); }
 });
 
+test('drain: the embedding model is loaded before the items and kept by the plan; a slow load does not stop the drain', async () => {
+  const db = openDb(path.join(TMP, 'warm.db'));
+  const o = await fakeOllama({});
+  const settings = { ...BASE, embedModel: 'embeddinggemma', provider: 'ollama' };
+  const provider = { kind: 'ollama', model: 'gemma3:12b', baseUrl: o.url };
+  try {
+    const order = [];
+    const embeds = [];
+    const plan = async (s, { model, embed }) => { embeds.push(embed); return { model, unload: [] }; };
+    const warm = async () => { order.push('warm'); };
+    enqueueReads(db, 2);
+    const origFetch = o.calls.length;
+    assert.equal(await queue.drain(db, settings, { lock: false, sync: false, force: true, provider, plan, warm }), 2);
+    assert.equal(order.length, 1);
+    assert.ok(o.calls.length > origFetch);
+    assert.ok(embeds.every(Boolean), 'every plan keeps the embedding model');
+    // Too slow to load: the items are still handled, and the plan no longer keeps it.
+    embeds.length = 0;
+    enqueueReads(db, 1);
+    const slow = async () => { throw new Error('The operation was aborted due to timeout'); };
+    assert.equal(await queue.drain(db, settings, { lock: false, sync: false, force: true, provider, plan, warm: slow }), 1);
+    assert.ok(embeds.includes(false), 'the items run without it'); // upkeep still asks for it to embed the records
+  } finally { o.close(); db.close(); }
+});
+
 test('marker files: a live one pauses, a stale or missing one does not; folders hold markers', () => {
   const dir = path.join(TMP, 'gpu-busy');
   fs.mkdirSync(dir, { recursive: true });
