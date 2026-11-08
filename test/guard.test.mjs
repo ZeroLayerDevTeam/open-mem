@@ -43,6 +43,8 @@ async function setup({ allow = ['127.0.0.1'], pollSeconds = 0.05 } = {}) {
   const guard = await startGuard(settings, {
     busy: async () => { state.looks++; return state.busy; },
     unload: async () => { state.unloads++; return []; },
+    // The machine's real GPU is no part of these tests: a busy one would answer 503 for every model.
+    plan: async (s, { model }) => ({ model, unload: [] }),
   });
   const url = `http://127.0.0.1:${guard.address().port}`;
   return { ollama, state, guard, url, close: () => { guard.closeAllConnections(); guard.close(); ollama.server.closeAllConnections(); ollama.server.close(); } };
