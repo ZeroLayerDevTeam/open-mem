@@ -24,6 +24,8 @@ const MAX_ATTEMPTS = 3;
 // Ollama errors caused by the item itself, not by the model or the GPU: stored without the LLM at once.
 const ITEM_FAULT = /token repeat limit reached/i;
 const PUSH_EVERY_MS = 2 * 60 * 1000;
+// A draining client reports its queue (not its records) to the shared server this often; the web viewer counts on it.
+const REPORT_EVERY_MS = 30 * 1000;
 const NO_LLM = { kind: 'none' };
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 // Hooks start a drainer on every tool call: while paused, a pause seen this recently is reused instead of checked again.
@@ -475,7 +477,7 @@ async function gamesCheck(db, settings, isBusy) {
 // `force` (asked for from the web viewer): process even while a game runs or the queue is paused by hand. Marker files
 // and the GPU budget still apply: ignoring them could take the GPU from the job that holds it.
 export async function drain(db, settings, { lock = true, provider: forced, sync = true, busy: isBusy = busyReason, force = false,
-  pushEveryMs = PUSH_EVERY_MS, push = pushPending, plan = planGpu, start = startOllama } = {}) {
+  pushEveryMs = PUSH_EVERY_MS, reportEveryMs = REPORT_EVERY_MS, push = pushPending, status = reportStatus, plan = planGpu, start = startOllama } = {}) {
   if (lock && !acquireLock()) return 0;
   let handled = 0;
   const touched = new Set();
@@ -495,7 +497,7 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
     // The server's web viewer shows each machine's queue, and the GPU of the one that runs the LLM.
     const report = async () => {
       try {
-        await reportStatus(db, (method, route, body) => remoteFetch(settings, method, route, body), { queue: queueState(db), withGpus: local });
+        await status(db, (method, route, body) => remoteFetch(settings, method, route, body), { queue: queueState(db), withGpus: local });
       } catch (err) { log('warn', `status report failed: ${err.message}`); }
     };
     let held = false;
@@ -539,6 +541,7 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
     const recent = local && !force ? currentPause(db) : null;
     let pause = recent && Date.now() - recent.at < PAUSE_REUSE_MS && (!early || recent.kind === early.kind) ? recent : early;
     let pushedAt = Date.now();
+    let reportedAt = 0;
     const inFlight = new Set();
     // One item at a time per worker; llmParallel workers share the queue (claim never hands one item out twice). A
     // pause or an LLM failure seen by any of them stops them all once their current item is done.
@@ -569,8 +572,12 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
       // Sessions can fill the queue as fast as it drains: new records, and the queue the web viewer shows, must not
       // wait for it to empty.
       if (shared && Date.now() - pushedAt >= pushEveryMs) {
-        pushedAt = Date.now();
+        pushedAt = reportedAt = Date.now();
         await pushNow();
+        await report();
+      } else if (shared && Date.now() - reportedAt >= reportEveryMs) {
+        // The queue only (a few numbers): the web viewer stays at most this far behind.
+        reportedAt = Date.now();
         await report();
       }
       touched.add(item.project);

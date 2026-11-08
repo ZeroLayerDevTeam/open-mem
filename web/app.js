@@ -293,20 +293,32 @@ function pauseText(p) {
 }
 
 // Queues that wait or work, per machine: a delay in the activity chart must not read as missing work.
-function queuesPanel(queues, title = t('Queue'), note = t('Records appear in the activity chart, on the day they were captured, once the queue processes them.')) {
+function queuesPanel(queues, title = t('Queue'), note = t('Records appear in the activity chart, on the day they were captured, once the queue processes them.'), button = '') {
   if (!queues?.length) return '';
   const row = (q) => {
     const [state, label, why] = q.down ? ['down', t('Waiting for the LLM'), t('Not answering since {when}: {reason}', { when: ago(q.down.since), reason: clip(q.down.reason, 160) })]
       : q.pause ? ['paused', t('Paused'), t('Since {when}: {reason}', { when: ago(q.pause.since), reason: pauseText(q.pause) })]
         : q.pending ? ['work', t('Processing'), ''] : ['ready', t('Ready'), ''];
     return html`<li><div class="lead"><span class="state" data-s="${state}">${label}</span><span class="meta-item">${icon('device')}${q.device}</span>
-      ${Date.now() - q.at > 30 * 60000 ? html`<span>${t('last report {when}', { when: ago(q.at) })}</span>` : ''}</div>
+      <span data-report="${q.at}">${reportText(q.at)}</span></div>
       <span class="title">${q.pending ? t('{n} items in the queue, the oldest from {when}', { n: fmt(q.pending), when: dateTime(q.oldest) }) : t('Queue empty')}</span>
       ${why ? html`<p class="snippet">${why}</p>` : ''}</li>`;
   };
-  return html`<section class="panel"><header class="panel-head"><h2>${title}</h2><span class="muted">${note}</span></header>
+  return html`<section class="panel"><header class="panel-head"><h2>${title}</h2><div class="head-aside"><span class="muted">${note}</span>${button}</div></header>
     <ul class="list compact">${queues.map(row)}</ul></section>`;
 }
+
+// A draining machine reports its queue every REPORT_EVERY_S: how old the shown report is, and when the next one is due.
+const REPORT_EVERY_S = 30;
+const clock = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+function reportText(at) {
+  const s = Math.max(0, Math.floor((Date.now() - at) / 1000));
+  if (s > 30 * 60) return t('last report {when}', { when: ago(at) });
+  if (s >= REPORT_EVERY_S + 15) return t('last report {time} ago', { time: clock(s) });
+  return t('last report {time} ago · next in {left}', { time: clock(s), left: clock(Math.max(0, REPORT_EVERY_S - s)) });
+}
+// Counts the shown reports' age every second, between the page's own reloads.
+setInterval(() => { for (const el of $$('[data-report]')) el.textContent = reportText(Number(el.dataset.report)); }, 1000);
 
 // --- progress -----------------------------------------------------------------------------------------------------
 const overviewPage = {
@@ -1048,7 +1060,7 @@ const llmPage = {
 
     const panel = (title, aside, body) => html`<section class="panel"><header class="panel-head"><h2>${title}</h2>${aside || ''}</header>${body}</section>`;
     return html`${status}
-      ${queuesPanel(s.clients, t('Queues on other machines'), t('Each machine processes its own queue and reports it here every 2 minutes while it works.'))}
+      ${queuesPanel(s.clients, t('Queues on other machines'), t('Each machine processes its own queue and reports it here every 30 seconds while it works.'), refreshButton())}
       <div class="cols">${panel(t('In memory'), o?.up ? html`<span class="muted">${t('{n} loaded', { n: o.loaded.length })}</span>` : '', loaded)}${panel(t('GPU'), '', gpus)}</div>
       ${panel(t('Speed and calls'), html`<div class="seg" role="group" aria-label="${t('Period')}">${RANGES.map(([h, l]) => html`<button type="button" data-hours="${h}" aria-pressed="${h === st.hours}">${t(l)}</button>`)}</div>`, charts)}
       <div class="cols">${panel(t('Queue'), s.drainer ? html`<span class="state" data-s="work">${t('Working')}</span>` : '', queue)}<div class="stack">${panel(t('Models'), '', models)}${panel(t('Semantic search index'), '', index)}</div></div>

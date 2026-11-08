@@ -188,6 +188,7 @@ body.busy .loadbar { opacity: 1; width: 80%; transition: width 2.5s cubic-bezier
 .panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
 .panel-head h2 { margin: 0; font-size: 16px; letter-spacing: -.005em; }
 .panel-head a, .panel-head .muted { font-size: 13px; }
+.head-aside { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
 .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: start; }
 .cols.wide-left { grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); }
 .stack { display: grid; gap: 18px; min-width: 0; }

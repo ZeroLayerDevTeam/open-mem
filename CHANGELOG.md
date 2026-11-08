@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.2
+
+- A draining client reports its queue to the shared server every 30 seconds (the numbers only; records are still pushed every 2 minutes), so the web viewer is at most that far behind.
+- Web viewer: each machine's queue shows how old its last report is and when the next one is due, counting every second, and "Queues on other machines" has its own Refresh button.
+- Ollama calls ask for the context the model is already loaded with when it is larger than 8192 (another app on the same Ollama, such as the context compactor, loads it with 24576). Before, Ollama waited to reload the model until that app let it go, which could take hours, and every call timed out after 120 s. Prompts are still clipped to 8192.
+- Tests no longer depend on the machine they run on: a game seen by one test, or a busy real GPU, made others fail now and then.
+
 ## 0.9.1
 
 - `llmParallel` (default 1): queue items sent to the LLM at the same time. With Ollama started with `OLLAMA_NUM_PARALLEL` of at least that many, the GPU writes several replies together, so a long queue drains several times faster with the same model. A turn summary still waits for the observations of its turn, and a pause or an LLM failure stops every worker.

@@ -163,6 +163,14 @@ test('a client pushes while a long queue drains, not only when it empties', asyn
   const failing = { lock: false, provider: { kind: 'none' }, pushEveryMs: 0, push: async () => { throw new Error('server down'); } };
   assert.equal(await drain(db, settings, failing), 3);
   assert.equal(left(), 0);
+
+  // The queue alone is reported more often than records are pushed, so the web viewer stays close behind.
+  fill();
+  const reports = [];
+  const pushes = [];
+  await drain(db, settings, { ...opts(pushes), pushEveryMs: 1e9, reportEveryMs: 0, status: async (d, send, { queue }) => reports.push(queue.pending) });
+  assert.deepEqual(reports, [3, 2, 1, 0], 'before each item, and once at the end');
+  assert.deepEqual(pushes, [0], 'records only at the end');
   db.close();
 });
 
@@ -282,6 +290,7 @@ test('llmParallel sends several items at once, and a turn summary still sees all
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {
+      if (req.url === '/api/ps') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"models":[]}'); return; }
       const [system, user] = JSON.parse(body).messages.map((m) => m.content);
       peak = Math.max(peak, ++now);
       const isSummary = system.startsWith('You summarize');
@@ -303,6 +312,8 @@ test('llmParallel sends several items at once, and a turn summary still sees all
     // This process holds the drain lock from here on: a drainer that starts late stays out, drain() takes the lock over.
     fs.writeFileSync(path.join(TMP, 'data', 'drain.lock'), String(process.pid));
     db.prepare('DELETE FROM queue').run();
+    // Another test may leave a game seen, a pause or a back-off behind: this drain must not inherit them.
+    db.prepare("DELETE FROM meta WHERE key LIKE 'games_%' OR key LIKE 'pause%' OR key = 'llm_backoff'").run();
     const settings = { ...DEFAULT_SETTINGS, llmParallel: 4, busyFiles: [], embedModel: '', pauseWhenBusy: false, gpuBudget: false,
       notesReview: false, lessonsReview: false, briefEvery: 1000 };
     const n = store.addPrompt(db, { sessionId: 'sp', project: 'para', cwd: '/x/para', text: 'cambia todo' });
@@ -327,6 +338,7 @@ test('an item the model loops on is stored without the LLM at once, and the queu
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {
+      if (req.url === '/api/ps') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"models":[]}'); return; }
       const user = JSON.parse(body).messages[1].content;
       const file = user.match(/file_path":"([^"]+)/)?.[1];
       calls.push(file);
@@ -344,7 +356,8 @@ test('an item the model loops on is stored without the LLM at once, and the queu
   try {
     fs.writeFileSync(path.join(TMP, 'data', 'drain.lock'), String(process.pid));
     db.prepare('DELETE FROM queue').run();
-    db.prepare("DELETE FROM meta WHERE key IN ('llm_backoff', 'pause')").run();
+    // Another test may leave a game seen, a pause or a back-off behind: this drain must not inherit them.
+    db.prepare("DELETE FROM meta WHERE key LIKE 'games_%' OR key LIKE 'pause%' OR key = 'llm_backoff'").run();
     const settings = { ...DEFAULT_SETTINGS, busyFiles: [], embedModel: '', pauseWhenBusy: false, gpuBudget: false,
       notesReview: false, lessonsReview: false, briefEvery: 1000 };
     const n = store.addPrompt(db, { sessionId: 'sl', project: 'loop', cwd: '/x/loop', text: 'sigue' });

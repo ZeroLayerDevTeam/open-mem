@@ -175,7 +175,7 @@ test('a machine that runs Ollama reports its GPU with its status; the server kee
     const queue = { pending: 0, pause: null, down: null };
     const read = async () => ({ list: [{ index: 0, name: 'RTX 4060 Ti', memUsedMb: 900, memTotalMb: 16380, util: 3, temp: 41, powerW: 12 }], error: null });
     assert.equal(await reportStatus(db, send, { queue, withGpus: true, now: 1e6, read }), true);
-    assert.equal(await reportStatus(db, send, { queue, withGpus: true, now: 1e6 + 30000, read }), false);
+    assert.equal(await reportStatus(db, send, { queue, withGpus: true, now: 1e6 + 20000, read }), false);
     assert.equal(await reportStatus(db, send, { queue, withGpus: true, now: 1e6 + 61000, read: async () => ({ list: null, error: 'missing' }) }), true);
     assert.deepEqual(sent.map(([m, r, body]) => `${m} ${r} ${body.gpus?.[0]?.name ?? '-'}`), ['POST /api/client RTX 4060 Ti', 'POST /api/client -']);
 
@@ -279,4 +279,35 @@ test('apiKey reaches a remote Ollama as a bearer token on chat, embed, ps, tags 
     await llm.resolveProvider({ ...settings, apiKey: '' });
     assert.equal(o.calls[0].auth, undefined, 'no key, no header');
   } finally { o.server.close(); }
+});
+
+test('a model already loaded with a larger context is used as it is, not reloaded with 8192', async () => {
+  const http = await import('node:http');
+  const { completeJson, sharedCtx } = await import('../src/llm.mjs');
+  let loaded = [];
+  const asked = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (req.url === '/api/ps') return res.end(JSON.stringify({ models: loaded }));
+      asked.push(JSON.parse(body).options.num_ctx);
+      return res.end(JSON.stringify({ message: { content: '{"ok":1}' } }));
+    });
+  });
+  await new Promise((r) => { server.listen(0, '127.0.0.1', r); });
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    await completeJson({ kind: 'ollama', baseUrl, model: 'gemma3:12b' }, 's', 'u');
+    loaded = [{ name: 'gemma3:12b', context_length: 24576 }];
+    assert.equal(await sharedCtx({ baseUrl, model: 'gemma3:12b' }), 8192, 'seen a moment ago: cached');
+    assert.equal(await sharedCtx({ baseUrl, model: 'gemma3:12b' }, { now: Date.now() + 20000 }), 24576);
+    await completeJson({ kind: 'ollama', baseUrl, model: 'gemma3:12b' }, 's', 'u');
+    loaded = [{ name: 'gemma3:12b', context_length: 4096 }];
+    assert.equal(await sharedCtx({ baseUrl, model: 'gemma3:12b' }, { now: Date.now() + 40000 }), 8192, 'never below 8192');
+    loaded = [{ name: 'qwen3:8b', context_length: 32768 }];
+    assert.equal(await sharedCtx({ baseUrl, model: 'gemma3:12b' }, { now: Date.now() + 60000 }), 8192, 'another model');
+    assert.deepEqual(asked, [8192, 24576]);
+  } finally { server.close(); }
 });

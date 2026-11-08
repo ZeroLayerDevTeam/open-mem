@@ -116,6 +116,28 @@ export async function unloadOllama(baseUrl, models, apiKey) {
 // Every model open-mem may load: the chat model (pinned or picked), its fallbacks and the embedding model.
 export const ownModels = (settings, ...extra) => [settings.model, ...(settings.fallbackModels || []), settings.embedModel, ...extra].filter(Boolean);
 
+// The context open-mem asks for. Ollama reloads a model asked for with another num_ctx, and only once nobody uses it:
+// another app on the same Ollama (the context compactor, 24576) kept it busy for hours and every call timed out. So
+// when the model is already loaded with a larger context, ask for that one: the prompts are clipped to NUM_CTX anyway.
+const NUM_CTX = 8192;
+const CTX_MAX = 131072;
+const CTX_TTL_MS = 15000;
+const ctxSeen = new Map();
+export async function sharedCtx(provider, { now = Date.now() } = {}) {
+  const key = `${provider.baseUrl} ${provider.model}`;
+  const hit = ctxSeen.get(key);
+  if (hit && now - hit.at < CTX_TTL_MS) return hit.ctx;
+  let ctx = NUM_CTX;
+  try {
+    const ps = await fetchJson(`${provider.baseUrl}/api/ps`, { timeoutMs: 2500, headers: ollamaAuth(provider.apiKey) });
+    const loaded = (ps.models || []).find((m) => sameModel(m.name, provider.model));
+    const n = Number(loaded?.context_length);
+    if (Number.isInteger(n) && n > NUM_CTX && n <= CTX_MAX) ctx = n;
+  } catch { /* the call itself reports what is wrong */ }
+  ctxSeen.set(key, { at: now, ctx });
+  return ctx;
+}
+
 // One chat call that must answer a JSON object. When the provider carries a recorder (provider.record, see
 // llmstats.mjs), every call is reported with its timings, also the failed ones.
 export async function completeJson(provider, system, user, timeoutMs = 120000) {
@@ -126,12 +148,13 @@ export async function completeJson(provider, system, user, timeoutMs = 120000) {
   let timings;
   try {
     if (provider.kind === 'ollama') {
+      const numCtx = await sharedCtx(provider);
       res = await fetchJson(`${provider.baseUrl}/api/chat`, {
         timeoutMs,
         headers: ollamaAuth(provider.apiKey),
         // num_predict: a model that starts repeating itself stops long before the context is full.
         body: { model: provider.model, messages, stream: false, format: 'json', think: false,
-          keep_alive: provider.keepAlive, options: { temperature: 0.2, num_ctx: 8192, num_predict: MAX_REPLY_TOKENS } },
+          keep_alive: provider.keepAlive, options: { temperature: 0.2, num_ctx: numCtx, num_predict: MAX_REPLY_TOKENS } },
       });
       timings = ollamaTimings(res);
     } else if (provider.kind === 'openai') {

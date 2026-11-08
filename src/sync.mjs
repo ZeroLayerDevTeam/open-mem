@@ -8,7 +8,7 @@ import { asText, upsertObservation, upsertSummary } from './store.mjs';
 
 const BATCH = 400;
 const MAX_ROWS = 2000; // per kind, per request (server side)
-const STATUS_EVERY_MS = 60000;
+const STATUS_EVERY_MS = 25000; // below the drainer's 30 s report interval
 const STATUS_KEEP_MS = 14 * 864e5;
 const PAUSE_KINDS = new Set(['manual', 'marker', 'game', 'gpu', 'slots', 'slow', 'error']);
 
