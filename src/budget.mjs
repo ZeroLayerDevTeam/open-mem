@@ -136,7 +136,11 @@ export async function planGpu(settings, { baseUrl, model, embed = false, backlog
     const ownLoadedMb = exact ? 0 : loaded.filter((m) => isOwn(m.name)).reduce((n, m) => n + (m.size_vram ?? 0) / MIB, 0);
     freeMb = list.reduce((n, g) => n + g.memTotalMb - g.memUsedMb, 0) + ownLoadedMb - lim.overheadMb - settings.gpuReserveMb;
   }
-  const chosen = exact && loadedOwn(model) ? model : candidates.find((name) => vramOf(name) + embedMb <= freeMb);
+  // A model already loaded (and the embedder, when asked) is in VRAM already: using it costs nothing more, whatever
+  // the free memory says (that count would add it a second time on top of the reserve).
+  const inVram = (name) => loadedOwn(name) && (!embedName || loadedOwn(embedName));
+  const chosen = exact && loadedOwn(model) ? model
+    : inVram(candidates[0]) ? candidates[0] : candidates.find((name) => vramOf(name) + embedMb <= freeMb);
   if (!chosen) {
     const need = Math.round(vramOf(candidates[0]) + embedMb);
     return { pause: { kind: 'gpu', detail: `${Math.max(0, Math.round(freeMb))} MiB free, ${candidates[0]} needs ${need} MiB` } };

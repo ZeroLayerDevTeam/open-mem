@@ -103,6 +103,25 @@ test('GPU budget: the best model that fits, a lighter one while others share Oll
   assert.deepEqual(await plan({}, { exact: true, model: 'gemma3:4b' }, { loaded: [['gemma3:4b', 3]], usedMb: 12000 }), { model: 'gemma3:4b', unload: [] });
 });
 
+test('GPU budget: the model already loaded is used even when the free memory looks short', async () => {
+  // 12b loaded with a large context (another app asked for it): 11.2 GiB used of 12, the count says it would not fit.
+  assert.deepEqual(await plan({ fallbackModels: [] }, {}, { loaded: [['gemma3:12b', 9]], usedMb: 11500 }), { model: 'gemma3:12b', unload: [] });
+  // Not loaded: the free memory decides, as before.
+  assert.equal((await plan({ fallbackModels: [] }, {}, { usedMb: 11500 })).pause?.kind, 'gpu');
+});
+
+test('drain: an answer clears a pause another drainer noted', async () => {
+  const db = openDb(path.join(TMP, 'stale-pause.db'));
+  const o = await fakeOllama({});
+  const free = async (s, { model }) => ({ model, unload: [] });
+  try {
+    setMeta(db, 'pause', JSON.stringify({ kind: 'gpu', detail: 'x', since: Date.now() - 60000, at: Date.now() - 60000 }));
+    enqueueReads(db, 1);
+    assert.equal(await queue.drain(db, BASE, { lock: false, sync: false, force: true, provider: { kind: 'ollama', model: 'gemma3:12b', baseUrl: o.url }, plan: free }), 1);
+    assert.equal(queue.queueState(db).pause, null);
+  } finally { o.close(); db.close(); }
+});
+
 test('marker files: a live one pauses, a stale or missing one does not; folders hold markers', () => {
   const dir = path.join(TMP, 'gpu-busy');
   fs.mkdirSync(dir, { recursive: true });
