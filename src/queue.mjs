@@ -398,9 +398,11 @@ export function backOff(db, kind, detail, now = Date.now()) {
   return { kind, detail };
 }
 
-// An answer from the LLM: the next timeout waits the shortest step again.
+// An answer from the LLM: the next timeout waits the shortest step again, and a pause another drainer noted is over
+// (it would stay until this drain ends, and the web viewer would show a queue that drains as paused).
 function answered(db) {
   if (getMeta(db, 'llm_slow_streak')) setMeta(db, 'llm_slow_streak', '');
+  endPause(db);
 }
 
 function notePause(db, pause, now = Date.now()) {
