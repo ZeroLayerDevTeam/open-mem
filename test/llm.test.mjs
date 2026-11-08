@@ -175,7 +175,7 @@ test('a machine that runs Ollama reports its GPU with its status; the server kee
     const queue = { pending: 0, pause: null, down: null };
     const read = async () => ({ list: [{ index: 0, name: 'RTX 4060 Ti', memUsedMb: 900, memTotalMb: 16380, util: 3, temp: 41, powerW: 12 }], error: null });
     assert.equal(await reportStatus(db, send, { queue, withGpus: true, now: 1e6, read }), true);
-    assert.equal(await reportStatus(db, send, { queue, withGpus: true, now: 1e6 + 30000, read }), false);
+    assert.equal(await reportStatus(db, send, { queue, withGpus: true, now: 1e6 + 20000, read }), false);
     assert.equal(await reportStatus(db, send, { queue, withGpus: true, now: 1e6 + 61000, read: async () => ({ list: null, error: 'missing' }) }), true);
     assert.deepEqual(sent.map(([m, r, body]) => `${m} ${r} ${body.gpus?.[0]?.name ?? '-'}`), ['POST /api/client RTX 4060 Ti', 'POST /api/client -']);
 
