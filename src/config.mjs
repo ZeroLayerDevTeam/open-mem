@@ -13,6 +13,10 @@ export const DEFAULT_SETTINGS = {
   baseUrl: '',
   apiKey: '',
   llmTimeoutMs: 120000,
+  // Queue items sent to the LLM at the same time. Pays off when the server runs them together (Ollama:
+  // OLLAMA_NUM_PARALLEL of at least this many): a GPU writes several replies nearly as fast as one. Above Ollama's
+  // parallel slots the extra requests only wait in its line, and that wait counts against llmTimeoutMs.
+  llmParallel: 1,
   // Once an LLM has been seen, the queue waits for it while it is down. Only after it stays unreachable for this long
   // (counting only the time this machine was in use) is the queue stored without it (the no-LLM path keeps only edits
   // and commands). A pause never counts.

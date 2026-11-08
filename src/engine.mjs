@@ -1,12 +1,13 @@
 // The web viewer's LLM page: what the local LLM is doing (Ollama models in memory, GPU, queue, speed) and the few
 // actions it offers (process the queue now, retry failed items, load or unload the model, pin a model, embed all).
-import { loadSettings, saveSettings } from './config.mjs';
+import { deviceName, loadSettings, saveSettings } from './config.mjs';
 import { getMeta } from './db.mjs';
 import { gpuReports, gpus } from './gpu.mjs';
 import { ollamaAuth, ownModels, resolveProvider, unloadOllama } from './llm.mjs';
 import { callStats } from './llmstats.mjs';
 import { currentPause, drainerPid, llmDown, spawnCli, spawnDrainer } from './queue.mjs';
 import { countPending, embedEnabled } from './semantic.mjs';
+import { clientStatuses } from './sync.mjs';
 
 export { parseNvidiaSmi, smiCandidates } from './gpu.mjs';
 
@@ -88,6 +89,8 @@ export async function engineStatus(db, settings, { hours } = {}) {
     // An LLM that answered before and is down now: the queue waits for it instead of storing records raw.
     waitingForLlm: provider.kind === 'none' && Boolean(provider.unreachable) && Boolean(getMeta(db, 'llm_seen_at')),
     queue: queueInfo(db),
+    // Queues the clients of a shared server reported (each machine drains its own): this one's queue is `queue`.
+    clients: clientStatuses(db).filter((c) => c.device !== deviceName(settings)),
     embeddings: embeddings(db, settings),
     stats: callStats(db, { hours }),
   };

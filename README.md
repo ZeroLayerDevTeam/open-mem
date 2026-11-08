@@ -251,6 +251,7 @@ claude-open-mem never deletes claude-mem data.
 | `gpuBudget` / `gpuReserveMb` | `true` / 1536 | Send work to the local Ollama only when its model fits in free video memory minus `OLLAMA_GPU_OVERHEAD` and this reserve, without pushing another app's model out |
 | `busyFiles` | `["~/.gpu-busy"]` | Marker files or folders: while one exists, the local Ollama gets nothing and open-mem frees its own models |
 | `llmKeepAlive` | `10m` | How long Ollama keeps the model loaded after the last call |
+| `llmParallel` | 1 | Queue items sent to the LLM at the same time; start Ollama with `OLLAMA_NUM_PARALLEL` of at least this many (measured on an RTX 4060 Ti with gemma3:12b: 4 slots with `OLLAMA_KV_CACHE_TYPE=q8_0` hold 8.8 GB against 8.4 GB for one, and drain about 2.8 times faster; 6 slots were slower). Clients with other context sizes (`num_ctx`) on the same Ollama make it reload the model with that size for every slot |
 | `pauseWhenBusy` | `true` | Pause the queue and unload open-mem's Ollama models while a game runs |
 | `busyProcesses` | `[]` | Exe names (`GTA5.exe`) or folders (`D:\Games\`) that count as a game |
 | `busyPaths` / `busyIgnore` | game libraries / launchers | Folders whose programs count as games, and exceptions |

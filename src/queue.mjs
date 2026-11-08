@@ -43,10 +43,14 @@ export function enqueue(db, kind, sessionId, project, payload) {
     .run(kind, sessionId, project, JSON.stringify(redact(payload)), Date.now());
 }
 
+// A turn summary reads the turn's stored observations: with several items in flight it waits until the session's
+// earlier observations are done (failed ones never will be).
 function claim(db) {
   return transaction(db, () => {
-    const row = db.prepare(`SELECT * FROM queue WHERE status = 'pending'
-        OR (status = 'processing' AND claimed_at < ?) ORDER BY id LIMIT 1`)
+    const row = db.prepare(`SELECT * FROM queue q WHERE (q.status = 'pending' OR (q.status = 'processing' AND q.claimed_at < ?))
+        AND NOT (q.kind = 'summary' AND EXISTS (SELECT 1 FROM queue o WHERE o.kind = 'observation'
+          AND o.session_id IS q.session_id AND o.id < q.id AND o.status != 'failed'))
+        ORDER BY q.id LIMIT 1`)
       .get(Date.now() - STALE_CLAIM_MS);
     if (!row) return null;
     db.prepare("UPDATE queue SET status = 'processing', claimed_at = ?, attempts = attempts + 1 WHERE id = ?")
@@ -486,6 +490,12 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
     // Only when nothing listens: an Ollama too busy to answer in time (a model loading for another app) is left alone.
     if (!early && !forced && provider.refused && await autostartOllama(db, settings, start)) provider = withRecorder(db, await resolveProvider(settings));
     const local = provider.kind === 'ollama';
+    // The server's web viewer shows each machine's queue, and the GPU of the one that runs the LLM.
+    const report = async () => {
+      try {
+        await reportStatus(db, (method, route, body) => remoteFetch(settings, method, route, body), { queue: queueState(db), withGpus: local });
+      } catch (err) { log('warn', `status report failed: ${err.message}`); }
+    };
     let held = false;
     if (early) {
       // nothing learned about the LLM
@@ -527,20 +537,39 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
     const recent = local && !force ? currentPause(db) : null;
     let pause = recent && Date.now() - recent.at < PAUSE_REUSE_MS && (!early || recent.kind === early.kind) ? recent : early;
     let pushedAt = Date.now();
-    while (!held && !pause) {
-      const g = await gate();
-      if (g.pause) { pause = g.pause; break; }
-      if (g.model) provider.model = g.model;
-      if (provider.model && provider.model !== getMeta(db, 'llm_model')) setMeta(db, 'llm_model', provider.model);
-      if (g.unload?.length) {
-        try { await unloadOllama(provider.baseUrl, g.unload, settings.apiKey); } catch { /* Ollama frees them on its own */ }
+    const inFlight = new Set();
+    // One item at a time per worker; llmParallel workers share the queue (claim never hands one item out twice). A
+    // pause or an LLM failure seen by any of them stops them all once their current item is done.
+    const worker = async () => {
+      while (!held && !pause) {
+        const g = await gate();
+        if (pause) break;
+        if (g.pause) { pause = g.pause; break; }
+        if (g.model) provider.model = g.model;
+        if (provider.model && provider.model !== getMeta(db, 'llm_model')) setMeta(db, 'llm_model', provider.model);
+        if (g.unload?.length) {
+          try { await unloadOllama(provider.baseUrl, g.unload, settings.apiKey); } catch { /* Ollama frees them on its own */ }
+        }
+        const item = claim(db);
+        if (!item) {
+          // What is left may wait for an item still in flight (a summary for its turn's observations).
+          if (!inFlight.size) break;
+          await Promise.race(inFlight);
+          continue;
+        }
+        const done = handle(item);
+        inFlight.add(done);
+        try { if (await done) break; } finally { inFlight.delete(done); }
       }
-      const item = claim(db);
-      if (!item) break;
-      // Sessions can fill the queue as fast as it drains: new records must not wait for it to empty.
+    };
+    // Handles one claimed item; returns true when the drain must stop.
+    const handle = async (item) => {
+      // Sessions can fill the queue as fast as it drains: new records, and the queue the web viewer shows, must not
+      // wait for it to empty.
       if (shared && Date.now() - pushedAt >= pushEveryMs) {
-        await pushNow();
         pushedAt = Date.now();
+        await pushNow();
+        await report();
       }
       touched.add(item.project);
       const run = (p) => (item.kind === 'observation' ? processObservation(db, item, p, settings)
@@ -557,21 +586,21 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
           db.prepare("UPDATE queue SET status = 'pending', attempts = attempts - 1, error = ? WHERE id = ?").run(message, item.id);
           if (err.name === 'TimeoutError') {
             // The GPU is busy with something else: wait a little instead of retrying on the next tool call.
-            pause = backOff(db, 'slow', `no answer from ${provider.model} in ${Math.round(settings.llmTimeoutMs / 1000)} s`);
+            pause ||= backOff(db, 'slow', `no answer from ${provider.model} in ${Math.round(settings.llmTimeoutMs / 1000)} s`);
           } else log('warn', `drain paused, provider unavailable: ${message}`);
-          break;
+          return true;
         }
         log('warn', `queue item ${item.id} (${item.kind}) attempt ${item.attempts}: ${message}`);
         if (err.status >= 500 && item.attempts < MAX_ATTEMPTS) {
           // Ollama failed to run the model (out of memory, a load error): wait a little rather than burn the attempts
           // in a row. Still counted, so an item that always fails cannot hold the head of the queue forever.
           db.prepare("UPDATE queue SET status = 'pending', error = ? WHERE id = ?").run(message, item.id);
-          pause = backOff(db, 'error', message.slice(0, 160));
-          break;
+          pause ||= backOff(db, 'error', message.slice(0, 160));
+          return true;
         }
         if (item.attempts < MAX_ATTEMPTS) {
           db.prepare("UPDATE queue SET status = 'pending', error = ? WHERE id = ?").run(message, item.id);
-          continue;
+          return false;
         }
         // The LLM keeps failing on this item (bad JSON, too long…): store it without the LLM rather than lose it.
         try {
@@ -582,7 +611,11 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
           db.prepare("UPDATE queue SET status = 'failed', error = ? WHERE id = ?").run(String(err2.message).slice(0, 500), item.id);
         }
       }
-    }
+      return false;
+    };
+    // Without an LLM every item is a quick local write: one worker keeps the order.
+    const workers = provider.kind === 'none' ? 1 : Math.max(1, Math.min(16, Math.floor(Number(settings.llmParallel)) || 1));
+    await Promise.all(Array.from({ length: workers }, worker));
     if (pause && pause !== recent) {
       notePause(db, pause);
       // Free the GPU of open-mem's own models, never of another app's: they share this Ollama.
@@ -595,10 +628,7 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
     }
     if (shared) {
       await pushNow();
-      // The server's web viewer shows each machine's queue, and the GPU of the one that runs the LLM.
-      try {
-        await reportStatus(db, (method, route, body) => remoteFetch(settings, method, route, body), { queue: queueState(db), withGpus: local });
-      } catch (err) { log('warn', `status report failed: ${err.message}`); }
+      await report();
     }
   } finally {
     if (lock) releaseLock();

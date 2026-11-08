@@ -16,7 +16,7 @@ const { openDb } = await import('../src/db.mjs');
 const { matchBusy } = await import('../src/busy.mjs');
 const { importClaudeMem } = await import('../src/claudemem.mjs');
 const store = await import('../src/store.mjs');
-const { enqueue, drain } = await import('../src/queue.mjs');
+const { enqueue, drain, drainerPid } = await import('../src/queue.mjs');
 const { parseJsonReply, pickOllamaModel } = await import('../src/llm.mjs');
 
 saveSettings({ ...DEFAULT_SETTINGS, provider: 'none', autoImportClaudeMem: false, webAutostart: false });
@@ -271,4 +271,51 @@ test('redaction removes secrets but keeps ordinary code', async () => {
   assert.equal(store.redactExisting(db), 1);
   assert.equal(store.search(db, { query: 'letmein123' }).length, 0, 'FTS index no longer holds the secret');
   db.close();
+});
+
+test('llmParallel sends several items at once, and a turn summary still sees all its observations', async () => {
+  const http = await import('node:http');
+  let now = 0;
+  let peak = 0;
+  let summaryPrompt = '';
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const [system, user] = JSON.parse(body).messages.map((m) => m.content);
+      peak = Math.max(peak, ++now);
+      const isSummary = system.startsWith('You summarize');
+      if (isSummary) summaryPrompt = user;
+      const reply = isSummary ? { skip: false, request: 'r', completed: 'c' }
+        : { skip: false, type: 'change', title: `LLM ${user.match(/file_path":"([^"]+)/)[1]}`, narrative: 'n' };
+      setTimeout(() => {
+        now--;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ message: { content: JSON.stringify(reply) }, eval_count: 5, eval_duration: 1e8 }));
+      }, 60);
+    });
+  });
+  await new Promise((r) => { server.listen(0, '127.0.0.1', r); });
+  // The hooks test leaves a detached drainer behind: it would take some of these items.
+  for (const end = Date.now() + 30000; drainerPid() && Date.now() < end;) await new Promise((r) => { setTimeout(r, 100); });
+  const db = openDb();
+  try {
+    // This process holds the drain lock from here on: a drainer that starts late stays out, drain() takes the lock over.
+    fs.writeFileSync(path.join(TMP, 'data', 'drain.lock'), String(process.pid));
+    db.prepare('DELETE FROM queue').run();
+    const settings = { ...DEFAULT_SETTINGS, llmParallel: 4, busyFiles: [], embedModel: '', pauseWhenBusy: false, gpuBudget: false,
+      notesReview: false, lessonsReview: false, briefEvery: 1000 };
+    const n = store.addPrompt(db, { sessionId: 'sp', project: 'para', cwd: '/x/para', text: 'cambia todo' });
+    for (const f of ['a', 'b', 'c', 'd', 'e', 'f']) enqueue(db, 'observation', 'sp', 'para', { tool: 'Edit', input: { file_path: `/x/${f}` }, output: 'ok', prompt_number: n });
+    enqueue(db, 'summary', 'sp', 'para', { prompt_number: n });
+    const provider = { kind: 'ollama', model: 'm', baseUrl: `http://127.0.0.1:${server.address().port}` };
+    assert.equal(await drain(db, settings, { sync: false, provider }), 7);
+    assert.equal(peak, 4, 'four calls in flight at once');
+    for (const f of ['a', 'b', 'c', 'd', 'e', 'f']) assert.match(summaryPrompt, new RegExp(`LLM /x/${f}`), 'the summary ran after every observation');
+    assert.equal(db.prepare('SELECT count(*) n FROM queue').get().n, 0);
+  } finally {
+    db.close();
+    server.closeAllConnections();
+    server.close();
+  }
 });
