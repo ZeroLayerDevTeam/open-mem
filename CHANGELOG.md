@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.3
+
+- After an LLM timeout the queue waits 15 s, then 30 s, 60 s and at most 2 minutes for the timeouts in a row, and starts over after an answer. Before, every timeout paused it 2 minutes, even when Ollama was free again at once. A model failure still waits 2 minutes.
+- Plugin updates reach the open sessions without a restart: a hook run from an older version's folder of the plugin cache hands itself over to the newest version installed next to it. The MCP server of an open session keeps its version until the session restarts.
+
 ## 0.9.2
 
 - A draining client reports its queue to the shared server every 30 seconds (the numbers only; records are still pushed every 2 minutes), so the web viewer is at most that far behind.

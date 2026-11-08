@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dataPath, deviceName, loadSettings, log, projectFromCwd } from './config.mjs';
+import { forwardToNewest } from './newest.mjs';
 
 // node:sqlite modules load only after the Node version check below.
 let m;
@@ -160,7 +161,10 @@ async function main() {
 }
 
 const [major, minor] = process.versions.node.split('.').map(Number);
-if (major < 22 || (major === 22 && minor < 13)) {
+// A session started before an update still runs this folder: the newest installed version handles the hook instead.
+if (forwardToNewest(ROOT, path.join('src', 'hook.mjs'))) {
+  // done by the newer copy
+} else if (major < 22 || (major === 22 && minor < 13)) {
   log('error', `Node ${process.versions.node} is too old; claude-open-mem needs Node >= 22.13 (node:sqlite).`);
   if (process.argv[2] === 'session-start') {
     process.stdout.write(`claude-open-mem disabled: needs Node >= 22.13, found ${process.versions.node}.`);

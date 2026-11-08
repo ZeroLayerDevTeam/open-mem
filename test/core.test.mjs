@@ -313,7 +313,7 @@ test('llmParallel sends several items at once, and a turn summary still sees all
     fs.writeFileSync(path.join(TMP, 'data', 'drain.lock'), String(process.pid));
     db.prepare('DELETE FROM queue').run();
     // Another test may leave a game seen, a pause or a back-off behind: this drain must not inherit them.
-    db.prepare("DELETE FROM meta WHERE key LIKE 'games_%' OR key LIKE 'pause%' OR key = 'llm_backoff'").run();
+    db.prepare("DELETE FROM meta WHERE key LIKE 'games_%' OR key LIKE 'pause%' OR key = 'llm_backoff' OR key = 'llm_slow_streak'").run();
     const settings = { ...DEFAULT_SETTINGS, llmParallel: 4, busyFiles: [], embedModel: '', pauseWhenBusy: false, gpuBudget: false,
       notesReview: false, lessonsReview: false, briefEvery: 1000 };
     const n = store.addPrompt(db, { sessionId: 'sp', project: 'para', cwd: '/x/para', text: 'cambia todo' });
@@ -357,7 +357,7 @@ test('an item the model loops on is stored without the LLM at once, and the queu
     fs.writeFileSync(path.join(TMP, 'data', 'drain.lock'), String(process.pid));
     db.prepare('DELETE FROM queue').run();
     // Another test may leave a game seen, a pause or a back-off behind: this drain must not inherit them.
-    db.prepare("DELETE FROM meta WHERE key LIKE 'games_%' OR key LIKE 'pause%' OR key = 'llm_backoff'").run();
+    db.prepare("DELETE FROM meta WHERE key LIKE 'games_%' OR key LIKE 'pause%' OR key = 'llm_backoff' OR key = 'llm_slow_streak'").run();
     const settings = { ...DEFAULT_SETTINGS, busyFiles: [], embedModel: '', pauseWhenBusy: false, gpuBudget: false,
       notesReview: false, lessonsReview: false, briefEvery: 1000 };
     const n = store.addPrompt(db, { sessionId: 'sl', project: 'loop', cwd: '/x/loop', text: 'sigue' });
