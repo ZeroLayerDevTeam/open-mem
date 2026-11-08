@@ -171,6 +171,8 @@ node "$OM" config set baseUrl http://192.168.0.20:11435  # the machine with the 
 
 Ollama stays on loopback: the guard is the only way in, only for the listed addresses and only for the calls a server needs (never pull or delete). While a game runs, a marker file is live or the queue is paused by hand, it answers 503, cuts the calls in flight and unloads open-mem's models (its own and those the server used, never another app's), within `guardPollSeconds`. A call whose model does not fit in the GPU budget gets 503 too. The server reads that as an LLM that is down, so its work waits and search stays full-text. Listing processes costs half a second, so the guard only does it while the server is using the GPU. With the guard stopped the server has no LLM at all: a failure never takes the GPU from a game.
 
+Over the internet, put the guard behind a TLS reverse proxy that checks a bearer token, and set that token as `apiKey` on the client (`config set apiKey <token>`): with provider `auto` or `ollama` it is sent on every Ollama call (chat, embeddings, model list, unload), so a client in another house can use the GPU with its memory still kept entirely on its own machine (`mode local`).
+
 ## LLM providers
 
 ```bash

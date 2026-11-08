@@ -533,7 +533,7 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
       if (g.model) provider.model = g.model;
       if (provider.model && provider.model !== getMeta(db, 'llm_model')) setMeta(db, 'llm_model', provider.model);
       if (g.unload?.length) {
-        try { await unloadOllama(provider.baseUrl, g.unload); } catch { /* Ollama frees them on its own */ }
+        try { await unloadOllama(provider.baseUrl, g.unload, settings.apiKey); } catch { /* Ollama frees them on its own */ }
       }
       const item = claim(db);
       if (!item) break;
@@ -587,7 +587,7 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
       notePause(db, pause);
       // Free the GPU of open-mem's own models, never of another app's: they share this Ollama.
       if (local && pause.kind !== 'slow') {
-        try { await unloadOllama(provider.baseUrl, ownModels(settings, ...used())); } catch { /* Ollama already gone */ }
+        try { await unloadOllama(provider.baseUrl, ownModels(settings, ...used()), settings.apiKey); } catch { /* Ollama already gone */ }
       }
     } else if (!pause) {
       endPause(db);

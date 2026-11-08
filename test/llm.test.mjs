@@ -27,7 +27,7 @@ function fakeOllama(reply = '{"skip": true}') {
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {
-      calls.push({ url: req.url, body: body ? JSON.parse(body) : null });
+      calls.push({ url: req.url, auth: req.headers.authorization, body: body ? JSON.parse(body) : null });
       const send = (o) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
       if (req.url === '/api/chat') return send({ message: { content: reply }, eval_count: 50, eval_duration: 2e9, prompt_eval_count: 400, prompt_eval_duration: 5e8, load_duration: 1e8, total_duration: 2.7e9 });
       if (req.url === '/api/version') return send({ version: '9.9.9' });
@@ -260,4 +260,23 @@ test('wake-on-lan: a machine in use stays on, a failed off is retried after anot
     assert.equal(await wake.wakeTick(db, settings, deps, 1e12 + 40 * M), 'on');
     assert.equal(await wake.wakeTick(db, { ...settings, wakeMac: '' }, deps, 0), 'off');
   } finally { db.close(); }
+});
+
+test('apiKey reaches a remote Ollama as a bearer token on chat, embed, ps, tags and unload', async () => {
+  const o = await fakeOllama();
+  try {
+    const settings = { ...DEFAULT_SETTINGS, provider: 'ollama', baseUrl: o.url, apiKey: 'sekret', embedModel: 'embeddinggemma' };
+    const provider = await llm.resolveProvider(settings);
+    assert.equal(provider.kind, 'ollama');
+    await llm.completeJson(provider, llm.OBSERVATION_SYSTEM, 'x');
+    await semantic.embed(settings, ['hola']);
+    await llm.unloadOllama(o.url, ['gemma3:12b'], settings.apiKey);
+    for (const route of ['/api/tags', '/api/chat', '/api/embed', '/api/ps', '/api/generate']) {
+      assert.ok(o.calls.some((c) => c.url === route), `${route} called`);
+      assert.ok(o.calls.filter((c) => c.url === route).every((c) => c.auth === 'Bearer sekret'), `${route} carries the key`);
+    }
+    o.calls.length = 0;
+    await llm.resolveProvider({ ...settings, apiKey: '' });
+    assert.equal(o.calls[0].auth, undefined, 'no key, no header');
+  } finally { o.server.close(); }
 });

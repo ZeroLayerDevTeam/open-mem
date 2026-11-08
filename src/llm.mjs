@@ -8,6 +8,9 @@ const MAX_REPLY_TOKENS = 1536;
 // gemma3 measured best at skipping trivial calls and fastest on a 16 GB GPU.
 const PREFERRED = [/gemma/i, /qwen/i, /llama/i, /mistral/i, /phi/i];
 
+// A remote Ollama behind a reverse proxy may ask for a key: the same apiKey, sent as a bearer token.
+export const ollamaAuth = (apiKey) => (apiKey ? { authorization: `Bearer ${apiKey}` } : {});
+
 async function fetchJson(url, { body, headers = {}, timeoutMs }) {
   const res = await fetch(url, {
     method: body ? 'POST' : 'GET',
@@ -44,9 +47,9 @@ export async function resolveProvider(settings) {
   }
   const baseUrl = (settings.baseUrl || OLLAMA_DEFAULT).replace(/\/+$/, '');
   try {
-    const tags = await fetchJson(`${baseUrl}/api/tags`, { timeoutMs: 2500 });
+    const tags = await fetchJson(`${baseUrl}/api/tags`, { timeoutMs: 2500, headers: ollamaAuth(settings.apiKey) });
     const model = pickOllamaModel((tags.models || []).map((m) => m.name), settings.model);
-    if (model) return { kind: 'ollama', model, baseUrl, keepAlive: settings.llmKeepAlive || undefined };
+    if (model) return { kind: 'ollama', model, baseUrl, apiKey: settings.apiKey || undefined, keepAlive: settings.llmKeepAlive || undefined };
     return { kind: 'none', reason: `Ollama at ${baseUrl} has no chat model (run: ollama pull qwen3:8b)` };
   } catch (err) {
     // refused: nothing listens there (Ollama is not running). A timeout means it runs but is busy.
@@ -97,14 +100,15 @@ export const sameModel = (a, b) => Boolean(a && b) && withTag(a).toLowerCase() =
 
 // Frees the (V)RAM of the given models if the Ollama at baseUrl has them loaded, and of nothing else: other apps share
 // that Ollama and their models are not ours to drop. Returns the names unloaded.
-export async function unloadOllama(baseUrl, models) {
+export async function unloadOllama(baseUrl, models, apiKey) {
   baseUrl = (baseUrl || OLLAMA_DEFAULT).replace(/\/+$/, '');
   const wanted = (models || []).filter(Boolean);
   if (!wanted.length) return [];
-  const ps = await fetchJson(`${baseUrl}/api/ps`, { timeoutMs: 2500 });
+  const headers = ollamaAuth(apiKey);
+  const ps = await fetchJson(`${baseUrl}/api/ps`, { timeoutMs: 2500, headers });
   const names = (ps.models || []).map((m) => m.name).filter((name) => wanted.some((w) => sameModel(w, name)));
   for (const model of names) {
-    await fetchJson(`${baseUrl}/api/generate`, { timeoutMs: 15000, body: { model, keep_alive: 0 } });
+    await fetchJson(`${baseUrl}/api/generate`, { timeoutMs: 15000, headers, body: { model, keep_alive: 0 } });
   }
   return names;
 }
@@ -124,13 +128,14 @@ export async function completeJson(provider, system, user, timeoutMs = 120000) {
     if (provider.kind === 'ollama') {
       res = await fetchJson(`${provider.baseUrl}/api/chat`, {
         timeoutMs,
+        headers: ollamaAuth(provider.apiKey),
         // num_predict: a model that starts repeating itself stops long before the context is full.
         body: { model: provider.model, messages, stream: false, format: 'json', think: false,
           keep_alive: provider.keepAlive, options: { temperature: 0.2, num_ctx: 8192, num_predict: MAX_REPLY_TOKENS } },
       });
       timings = ollamaTimings(res);
     } else if (provider.kind === 'openai') {
-      const headers = provider.apiKey ? { authorization: `Bearer ${provider.apiKey}` } : {};
+      const headers = ollamaAuth(provider.apiKey);
       const body = { model: provider.model, messages, temperature: 0.2, response_format: { type: 'json_object' } };
       try {
         res = await fetchJson(`${provider.baseUrl}/chat/completions`, { body, headers, timeoutMs });

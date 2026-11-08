@@ -3,6 +3,7 @@
 // cosine and the whole database fits in memory. Without an Ollama with the embedding model, search stays full-text.
 import { manualPause, markerPause } from './budget.mjs';
 import { getMeta } from './db.mjs';
+import { ollamaAuth } from './llm.mjs';
 import { ollamaTimings, recordCall } from './llmstats.mjs';
 import { clip, normalizeSearch, refId, search } from './store.mjs';
 
@@ -33,7 +34,7 @@ export async function embed(settings, texts, timeoutMs = 120000, record = null) 
   try {
     const res = await fetch(`${baseUrl(settings)}/api/embed`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...ollamaAuth(settings.apiKey) },
       body: JSON.stringify({ model: settings.embedModel, input: texts, keep_alive: settings.llmKeepAlive || undefined, truncate: true }),
       signal: AbortSignal.timeout(timeoutMs),
     });

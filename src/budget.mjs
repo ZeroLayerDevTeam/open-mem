@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { dataPath } from './config.mjs';
 import { gpus } from './gpu.mjs';
-import { ownModels, sameModel } from './llm.mjs';
+import { ollamaAuth, ownModels, sameModel } from './llm.mjs';
 
 const MIB = 1024 * 1024;
 // A model in VRAM takes about its file size plus the KV cache of an 8k context; measured on gemma3 12b/4b (q8_0 cache).
@@ -88,8 +88,8 @@ export async function ollamaLimits({ env = process.env, platform = process.platf
   return limitsCache;
 }
 
-async function ollamaGet(baseUrl, route) {
-  const res = await fetch(`${baseUrl}${route}`, { signal: AbortSignal.timeout(2500) });
+async function ollamaGet(baseUrl, route, apiKey) {
+  const res = await fetch(`${baseUrl}${route}`, { headers: ollamaAuth(apiKey), signal: AbortSignal.timeout(2500) });
   if (!res.ok) throw new Error(`HTTP ${res.status} from ${baseUrl}${route}`);
   return res.json();
 }
@@ -101,7 +101,7 @@ async function ollamaGet(baseUrl, route) {
 // deps (tests): ps(), tags(), gpus(), limits().
 export async function planGpu(settings, { baseUrl, model, embed = false, backlog = 0, exact = false }, deps = {}) {
   const {
-    ps = () => ollamaGet(baseUrl, '/api/ps'), tags = () => ollamaGet(baseUrl, '/api/tags'),
+    ps = () => ollamaGet(baseUrl, '/api/ps', settings.apiKey), tags = () => ollamaGet(baseUrl, '/api/tags', settings.apiKey),
     gpus: readGpus = gpus, limits = ollamaLimits,
   } = deps;
   let loaded;
