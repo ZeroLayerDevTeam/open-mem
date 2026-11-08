@@ -319,3 +319,44 @@ test('llmParallel sends several items at once, and a turn summary still sees all
     server.close();
   }
 });
+
+test('an item the model loops on is stored without the LLM at once, and the queue does not pause', async () => {
+  const http = await import('node:http');
+  const calls = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const user = JSON.parse(body).messages[1].content;
+      const file = user.match(/file_path":"([^"]+)/)?.[1];
+      calls.push(file);
+      if (file === '/x/loop') {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'prediction aborted, token repeat limit reached' }));
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ message: { content: JSON.stringify({ skip: false, type: 'change', title: `LLM ${file}`, narrative: 'n' }) } }));
+    });
+  });
+  await new Promise((r) => { server.listen(0, '127.0.0.1', r); });
+  for (const end = Date.now() + 30000; drainerPid() && Date.now() < end;) await new Promise((r) => { setTimeout(r, 100); });
+  const db = openDb();
+  try {
+    fs.writeFileSync(path.join(TMP, 'data', 'drain.lock'), String(process.pid));
+    db.prepare('DELETE FROM queue').run();
+    db.prepare("DELETE FROM meta WHERE key IN ('llm_backoff', 'pause')").run();
+    const settings = { ...DEFAULT_SETTINGS, busyFiles: [], embedModel: '', pauseWhenBusy: false, gpuBudget: false,
+      notesReview: false, lessonsReview: false, briefEvery: 1000 };
+    const n = store.addPrompt(db, { sessionId: 'sl', project: 'loop', cwd: '/x/loop', text: 'sigue' });
+    for (const f of ['loop', 'ok1', 'ok2']) enqueue(db, 'observation', 'sl', 'loop', { tool: 'Edit', input: { file_path: `/x/${f}` }, output: 'ok', prompt_number: n });
+    const provider = { kind: 'ollama', model: 'm', baseUrl: `http://127.0.0.1:${server.address().port}` };
+    assert.equal(await drain(db, settings, { sync: false, provider }), 3);
+    assert.deepEqual(calls, ['/x/loop', '/x/ok1', '/x/ok2'], 'one try for the looping item, the others go on');
+    assert.equal(db.prepare('SELECT count(*) n FROM queue').get().n, 0);
+    assert.ok(!db.prepare("SELECT value FROM meta WHERE key = 'llm_backoff'").get()?.value, 'no back-off');
+  } finally {
+    db.close();
+    server.closeAllConnections();
+    server.close();
+  }
+});
