@@ -130,15 +130,17 @@ export async function planGpu(settings, { baseUrl, model, embed = false, backlog
   const embedName = embed ? settings.embedModel : null;
   const embedMb = embedName ? vramOf(embedName) : 0;
   let freeMb = Infinity;
+  let rawFreeMb = Infinity; // what the GPU has free now, without counting open-mem's loaded models as free
   if (list.length) {
+    rawFreeMb = list.reduce((n, g) => n + g.memTotalMb - g.memUsedMb, 0) - lim.overheadMb - settings.gpuReserveMb;
     // open-mem's own loaded models count as free: they are unloaded when the plan does not use them. Not with `exact`:
     // the guard leaves the local drain's models alone, so only a model already loaded costs nothing more.
     const ownLoadedMb = exact ? 0 : loaded.filter((m) => isOwn(m.name)).reduce((n, m) => n + (m.size_vram ?? 0) / MIB, 0);
-    freeMb = list.reduce((n, g) => n + g.memTotalMb - g.memUsedMb, 0) + ownLoadedMb - lim.overheadMb - settings.gpuReserveMb;
+    freeMb = rawFreeMb + ownLoadedMb;
   }
-  // A model already loaded (and the embedder, when asked) is in VRAM already: using it costs nothing more, whatever
-  // the free memory says (that count would add it a second time on top of the reserve).
-  const inVram = (name) => loadedOwn(name) && (!embedName || loadedOwn(embedName));
+  // A model already loaded is in VRAM already: only what is not loaded yet (the embedder) has to fit in the memory
+  // free now. Counting the loaded model again, on top of the reserve, paused a queue whose model was running.
+  const inVram = (name) => loadedOwn(name) && (!embedName || loadedOwn(embedName) || embedMb <= rawFreeMb);
   const chosen = exact && loadedOwn(model) ? model
     : inVram(candidates[0]) ? candidates[0] : candidates.find((name) => vramOf(name) + embedMb <= freeMb);
   if (!chosen) {
