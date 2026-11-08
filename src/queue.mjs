@@ -35,7 +35,10 @@ const GAMES_RECHECK_MS = 30000; // listing processes costs half a second
 export const PAUSE_FRESH_MS = 20 * 60000;
 // Time between two drains longer than this means the machine was off or idle: it does not count as LLM downtime.
 const DOWN_GAP_MS = 15 * 60000;
-const SLOW_BACKOFF_MS = 2 * 60000; // after a timeout, the GPU is busy elsewhere: try again later, not on the next hook
+// After a timeout the GPU is busy elsewhere: try again later, not on the next hook. The wait grows with the timeouts in
+// a row (15 s, 30 s, 60 s, then 2 min) and starts over after an answer: a short wait loses little when Ollama is free.
+const SLOW_BACKOFF_STEPS_MS = [15000, 30000, 60000, 120000];
+const ERROR_BACKOFF_MS = 2 * 60000;
 const AUTOSTART_EVERY_MS = 10 * 60000;
 const AUTOSTART_WAIT_MS = 20000;
 const LOG_REPEAT_MS = 10 * 60000;
@@ -383,10 +386,21 @@ function logOnce(db, key, topic, text, level = 'info', now = Date.now()) {
 }
 
 // A pause lasts while its kind does: the detail of a GPU pause (free memory) changes from one drain to the next.
-// After a timeout or a model failure: nothing goes to the LLM for SLOW_BACKOFF_MS (hooks would retry at once).
-function backOff(db, kind, detail, now = Date.now()) {
-  setMeta(db, 'llm_backoff', JSON.stringify({ until: now + SLOW_BACKOFF_MS, kind, detail }));
+// After a timeout or a model failure nothing goes to the LLM for a while (hooks would retry at once).
+export function backOff(db, kind, detail, now = Date.now()) {
+  let ms = ERROR_BACKOFF_MS;
+  if (kind === 'slow') {
+    const streak = Number(getMeta(db, 'llm_slow_streak')) || 0;
+    ms = SLOW_BACKOFF_STEPS_MS[Math.min(streak, SLOW_BACKOFF_STEPS_MS.length - 1)];
+    setMeta(db, 'llm_slow_streak', String(streak + 1));
+  }
+  setMeta(db, 'llm_backoff', JSON.stringify({ until: now + ms, kind, detail }));
   return { kind, detail };
+}
+
+// An answer from the LLM: the next timeout waits the shortest step again.
+function answered(db) {
+  if (getMeta(db, 'llm_slow_streak')) setMeta(db, 'llm_slow_streak', '');
 }
 
 function notePause(db, pause, now = Date.now()) {
@@ -587,6 +601,7 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
         await run(provider);
         db.prepare('DELETE FROM queue WHERE id = ?').run(item.id);
         handled++;
+        answered(db);
       } catch (err) {
         const message = String(err.message).slice(0, 500);
         // The request never ran: Ollama gone, or the GPU guard / a proxy answering 502/503 for it.

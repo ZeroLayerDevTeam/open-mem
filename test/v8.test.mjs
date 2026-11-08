@@ -211,6 +211,34 @@ test('drain: a timeout keeps the item and its attempts, and waits a while before
   } finally { o.close(); db.close(); }
 });
 
+test('a timeout waits 15 s, then 30 s, 60 s and at most 2 min in a row; an answer starts over', () => {
+  const db = openDb(path.join(TMP, 'steps.db'));
+  try {
+    const now = 1_000_000;
+    const wait = () => JSON.parse(getMeta(db, 'llm_backoff')).until - now;
+    const waits = [];
+    for (let i = 0; i < 5; i++) { queue.backOff(db, 'slow', 'x', now); waits.push(wait()); }
+    assert.deepEqual(waits, [15000, 30000, 60000, 120000, 120000]);
+    queue.backOff(db, 'error', 'oom', now);
+    assert.equal(wait(), 120000, 'a model failure waits 2 min');
+    setMeta(db, 'llm_slow_streak', '');
+    queue.backOff(db, 'slow', 'x', now);
+    assert.equal(wait(), 15000);
+  } finally { db.close(); }
+});
+
+test('drain: an answer resets the timeout streak', async () => {
+  const db = openDb(path.join(TMP, 'streak.db'));
+  const o = await fakeOllama({});
+  const free = async (s, { model }) => ({ model, unload: [] });
+  try {
+    setMeta(db, 'llm_slow_streak', '3');
+    enqueueReads(db, 1);
+    assert.equal(await queue.drain(db, BASE, { lock: false, sync: false, provider: { kind: 'ollama', model: 'gemma3:12b', baseUrl: o.url }, plan: free }), 1);
+    assert.ok(!getMeta(db, 'llm_slow_streak'));
+  } finally { o.close(); db.close(); }
+});
+
 test('a local Ollama that does not answer is started, at most every 10 minutes', async () => {
   const db = openDb(path.join(TMP, 'start.db'));
   try {
