@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.4
+
+- The GPU budget no longer pauses the queue for a model that is already loaded: it counted that model's memory a second time on top of the reserve, so a model loaded with a large context (by the context compactor) paused one drainer while another kept summarising.
+- An answer from the LLM clears a pause another drainer noted. Before, the pause stayed until the running drain ended (up to 20 minutes), and the web viewer showed a queue that kept draining as paused.
+
 ## 0.9.3
 
 - After an LLM timeout the queue waits 15 s, then 30 s, 60 s and at most 2 minutes for the timeouts in a row, and starts over after an answer. Before, every timeout paused it 2 minutes, even when Ollama was free again at once. A model failure still waits 2 minutes.
