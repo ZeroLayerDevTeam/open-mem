@@ -3,7 +3,7 @@
 import { loadSettings, saveSettings } from './config.mjs';
 import { getMeta } from './db.mjs';
 import { gpuReports, gpus } from './gpu.mjs';
-import { ownModels, resolveProvider, unloadOllama } from './llm.mjs';
+import { ollamaAuth, ownModels, resolveProvider, unloadOllama } from './llm.mjs';
 import { callStats } from './llmstats.mjs';
 import { currentPause, drainerPid, llmDown, spawnCli, spawnDrainer } from './queue.mjs';
 import { countPending, embedEnabled } from './semantic.mjs';
@@ -15,9 +15,9 @@ const isLocal = (settings) => ['auto', 'ollama'].includes(settings.provider || '
 const ollamaUrl = (settings) => (settings.baseUrl || OLLAMA_DEFAULT).replace(/\/+$/, '');
 const notEmbedding = (name) => !/embed|bge|nomic|minilm/i.test(name);
 
-async function getJson(url, { timeoutMs = 2500, body } = {}) {
+async function getJson(url, { timeoutMs = 2500, body, apiKey } = {}) {
   const res = await fetch(url, {
-    method: body ? 'POST' : 'GET', headers: { 'content-type': 'application/json' },
+    method: body ? 'POST' : 'GET', headers: { 'content-type': 'application/json', ...ollamaAuth(apiKey) },
     body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(timeoutMs),
   });
   const text = await res.text();
@@ -28,9 +28,9 @@ async function getJson(url, { timeoutMs = 2500, body } = {}) {
 const modelInfo = (m) => ({ name: m.name, size: m.size ?? null, params: m.details?.parameter_size ?? null,
   quant: m.details?.quantization_level ?? null, family: m.details?.family ?? null });
 
-async function ollamaInfo(base) {
+async function ollamaInfo(base, apiKey) {
   try {
-    const [version, ps, tags] = await Promise.all([getJson(`${base}/api/version`), getJson(`${base}/api/ps`), getJson(`${base}/api/tags`)]);
+    const [version, ps, tags] = await Promise.all([getJson(`${base}/api/version`, { apiKey }), getJson(`${base}/api/ps`, { apiKey }), getJson(`${base}/api/tags`, { apiKey })]);
     return {
       up: true, url: base, version: version.version ?? null,
       loaded: (ps.models || []).map((m) => ({ ...modelInfo(m), vram: m.size_vram ?? null, context: m.context_length ?? null,
@@ -69,7 +69,7 @@ function queueInfo(db) {
 
 export async function engineStatus(db, settings, { hours } = {}) {
   const local = isLocal(settings);
-  const [provider, ollama, gpu] = await Promise.all([resolveProvider(settings), local ? ollamaInfo(ollamaUrl(settings)) : null, gpus()]);
+  const [provider, ollama, gpu] = await Promise.all([resolveProvider(settings), local ? ollamaInfo(ollamaUrl(settings), settings.apiKey) : null, gpus()]);
   return {
     now: Date.now(),
     provider: {
@@ -103,21 +103,21 @@ export async function engineAction(db, settings, action, body = {}) {
     const retried = Number(db.prepare("UPDATE queue SET status = 'pending', attempts = 0, error = NULL WHERE status = 'failed'").run().changes);
     return { retried, started: retried ? spawnDrainer() : false };
   }
-  if (action === 'unload') { needLocal(); return { unloaded: await unloadOllama(base, ownModels(settings, (await resolveProvider(settings)).model)) }; }
+  if (action === 'unload') { needLocal(); return { unloaded: await unloadOllama(base, ownModels(settings, (await resolveProvider(settings)).model), settings.apiKey) }; }
   if (action === 'load') {
     needLocal();
     const model = body.model || (await resolveProvider(settings)).model;
     if (!model) throw new Error('no chat model installed in Ollama');
     if (!notEmbedding(model)) throw new Error(`${model} is an embedding model`);
     const started = Date.now();
-    await getJson(`${base}/api/generate`, { timeoutMs: 300000, body: { model, keep_alive: '10m' } });
+    await getJson(`${base}/api/generate`, { timeoutMs: 300000, apiKey: settings.apiKey, body: { model, keep_alive: '10m' } });
     return { loaded: model, ms: Date.now() - started };
   }
   if (action === 'model') {
     needLocal();
     const name = String(body.model || '').trim();
     if (name) {
-      const info = await ollamaInfo(base);
+      const info = await ollamaInfo(base, settings.apiKey);
       if (!info.up) throw new Error('Ollama is not reachable');
       if (!info.installed.some((m) => m.name === name && m.chat)) throw new Error(`${name} is not an installed chat model`);
     }

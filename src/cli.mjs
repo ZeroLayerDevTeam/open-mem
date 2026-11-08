@@ -192,7 +192,7 @@ async function main() {
       const reason = await busyReason(settings);
       let unloaded = [];
       if (reason && flag(args, '--unload') && ['auto', 'ollama'].includes(settings.provider || 'auto')) {
-        try { unloaded = await unloadOllama(settings.baseUrl, ownModels(settings, getMeta(db, 'llm_model'))); } catch { /* Ollama not running */ }
+        try { unloaded = await unloadOllama(settings.baseUrl, ownModels(settings, getMeta(db, 'llm_model')), settings.apiKey); } catch { /* Ollama not running */ }
       }
       console.log(reason ? `busy: ${reason}${unloaded.length ? ` (unloaded ${unloaded.join(', ')})` : ''}` : 'idle');
       process.exitCode = reason ? 0 : 1;
