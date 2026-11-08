@@ -293,18 +293,18 @@ function pauseText(p) {
 }
 
 // Queues that wait or work, per machine: a delay in the activity chart must not read as missing work.
-function queuesPanel(queues) {
+function queuesPanel(queues, title = t('Queue'), note = t('Records appear in the activity chart, on the day they were captured, once the queue processes them.')) {
   if (!queues?.length) return '';
   const row = (q) => {
     const [state, label, why] = q.down ? ['down', t('Waiting for the LLM'), t('Not answering since {when}: {reason}', { when: ago(q.down.since), reason: clip(q.down.reason, 160) })]
       : q.pause ? ['paused', t('Paused'), t('Since {when}: {reason}', { when: ago(q.pause.since), reason: pauseText(q.pause) })]
-        : ['work', t('Processing'), ''];
+        : q.pending ? ['work', t('Processing'), ''] : ['ready', t('Ready'), ''];
     return html`<li><div class="lead"><span class="state" data-s="${state}">${label}</span><span class="meta-item">${icon('device')}${q.device}</span>
       ${Date.now() - q.at > 30 * 60000 ? html`<span>${t('last report {when}', { when: ago(q.at) })}</span>` : ''}</div>
       <span class="title">${q.pending ? t('{n} items in the queue, the oldest from {when}', { n: fmt(q.pending), when: dateTime(q.oldest) }) : t('Queue empty')}</span>
       ${why ? html`<p class="snippet">${why}</p>` : ''}</li>`;
   };
-  return html`<section class="panel"><header class="panel-head"><h2>${t('Queue')}</h2><span class="muted">${t('Records appear in the activity chart, on the day they were captured, once the queue processes them.')}</span></header>
+  return html`<section class="panel"><header class="panel-head"><h2>${title}</h2><span class="muted">${note}</span></header>
     <ul class="list compact">${queues.map(row)}</ul></section>`;
 }
 
@@ -315,7 +315,7 @@ const overviewPage = {
     const s = o.stats;
     const by = Object.fromEntries(o.tasks.map((x) => [x.status, x.n]));
     const top = Math.max(1, ...o.projects.map((p) => p.obs + p.sums));
-    view.innerHTML = html`${head(t('Progress'), t('Everything Claude has remembered across your machines, and the work still open.'))}
+    view.innerHTML = html`${head(t('Progress'), t('Everything Claude has remembered across your machines, and the work still open.'), refreshButton())}
       <section class="kpis" aria-label="${t('Summary')}">
         ${kpi(by.doing, t('tasks in progress'), '#/tasks', 'doing')}${kpi((by.todo || 0) + (by.blocked || 0), t('tasks waiting'), '#/tasks')}
         ${kpi(o.doneWeek, t('tasks done this week'), '#/tasks')}${kpi(s.observations, t('observations'), '#/timeline?kinds=obs')}
@@ -893,7 +893,7 @@ const llmPage = {
   hours: 24,
   async render(ctx) {
     view.innerHTML = html`${head(t('Local LLM'), t('The model that turns tool calls into memory: what it is doing, how fast, and what is waiting. Nothing here uses your Claude plan.'),
-      html`<p class="updated" id="llm-updated"></p>`)}<div id="llm">${skeleton(8)}</div>`;
+      html`<div class="btns"><p class="updated" id="llm-updated"></p>${refreshButton()}</div>`)}<div id="llm">${skeleton(8)}</div>`;
     view.onclick = (e) => this.act(e);
     view.onchange = (e) => { if (e.target.id === 'pin-model') this.post('model', { model: e.target.value }); };
     clearInterval(this.timer);
@@ -1048,6 +1048,7 @@ const llmPage = {
 
     const panel = (title, aside, body) => html`<section class="panel"><header class="panel-head"><h2>${title}</h2>${aside || ''}</header>${body}</section>`;
     return html`${status}
+      ${queuesPanel(s.clients, t('Queues on other machines'), t('Each machine processes its own queue and reports it here every 2 minutes while it works.'))}
       <div class="cols">${panel(t('In memory'), o?.up ? html`<span class="muted">${t('{n} loaded', { n: o.loaded.length })}</span>` : '', loaded)}${panel(t('GPU'), '', gpus)}</div>
       ${panel(t('Speed and calls'), html`<div class="seg" role="group" aria-label="${t('Period')}">${RANGES.map(([h, l]) => html`<button type="button" data-hours="${h}" aria-pressed="${h === st.hours}">${t(l)}</button>`)}</div>`, charts)}
       <div class="cols">${panel(t('Queue'), s.drainer ? html`<span class="state" data-s="work">${t('Working')}</span>` : '', queue)}<div class="stack">${panel(t('Models'), '', models)}${panel(t('Semantic search index'), '', index)}</div></div>
@@ -1106,6 +1107,9 @@ async function route() {
 }
 // Re-render the current page after a write (data changed under it).
 function refresh() { current = null; route(); }
+// Reload the page's data by hand, besides its own refresh.
+const refreshButton = () => html`<button class="btn" type="button" data-refresh>${t('Refresh')}</button>`;
+document.addEventListener('click', (e) => { if (e.target.closest('[data-refresh]')) refresh(); });
 
 async function start() {
   const me = await api('/api/me');

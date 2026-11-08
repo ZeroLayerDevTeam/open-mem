@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `llmParallel` (default 1): queue items sent to the LLM at the same time. With Ollama started with `OLLAMA_NUM_PARALLEL` of at least that many, the GPU writes several replies together, so a long queue drains several times faster with the same model. A turn summary still waits for the observations of its turn, and a pause or an LLM failure stops every worker.
+- A client reports its queue to the shared server every 2 minutes while it drains, not only when the queue is empty: the web viewer showed an old report (often an empty queue) during long runs.
+- Web viewer: the LLM page shows the queues the other machines report, and Progress and LLM have a Refresh button.
+
 ## 0.9.0
 
 - `cli backfill --from T --to T [--dir D]... [--dry-run]`: queues again, from Claude Code's transcripts, what a time window lost while the LLM was down: observations stored raw (upgraded in place, same id and time, once the LLM answers), calls the no-LLM path dropped (reads, searches, MCP calls) and turn summaries without a model or missing (each with the final message of its own turn). Records keep their capture time, nothing already in memory with the LLM or in the queue is queued twice (by tool_use_id), failed calls and skipped tools are left out, and a session resumed from another account is read from its most complete transcript. It only queues: the drainer runs these after what already waits, under the same pause and GPU rules. `--dir` takes config folders, projects folders or a folder of accounts (default `CLAUDE_CONFIG_DIR` and `~/.claude`).
