@@ -4,6 +4,7 @@
 
 - `llmParallel` (default 1): queue items sent to the LLM at the same time. With Ollama started with `OLLAMA_NUM_PARALLEL` of at least that many, the GPU writes several replies together, so a long queue drains several times faster with the same model. A turn summary still waits for the observations of its turn, and a pause or an LLM failure stops every worker.
 - A client reports its queue to the shared server every 2 minutes while it drains, not only when the queue is empty: the web viewer showed an old report (often an empty queue) during long runs.
+- An item the model loops on (Ollama answers `prediction aborted, token repeat limit reached`) is stored without the LLM at once. Before, it paused the whole queue for 2 minutes three times, and a manual drain stopped.
 - Web viewer: the LLM page shows the queues the other machines report, and Progress and LLM have a Refresh button.
 
 ## 0.9.0

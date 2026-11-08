@@ -21,6 +21,8 @@ import { pushPending, remoteFetch, reportStatus } from './sync.mjs';
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cli.mjs');
 const STALE_CLAIM_MS = 10 * 60 * 1000;
 const MAX_ATTEMPTS = 3;
+// Ollama errors caused by the item itself, not by the model or the GPU: stored without the LLM at once.
+const ITEM_FAULT = /token repeat limit reached/i;
 const PUSH_EVERY_MS = 2 * 60 * 1000;
 const NO_LLM = { kind: 'none' };
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
@@ -591,14 +593,17 @@ export async function drain(db, settings, { lock = true, provider: forced, sync 
           return true;
         }
         log('warn', `queue item ${item.id} (${item.kind}) attempt ${item.attempts}: ${message}`);
-        if (err.status >= 500 && item.attempts < MAX_ATTEMPTS) {
+        // The model loops on this item's text (Ollama aborts the reply): another try gives the same answer, and the
+        // model is fine for the other items, so no pause and no retries.
+        const itemFault = err.status >= 500 && ITEM_FAULT.test(message);
+        if (err.status >= 500 && !itemFault && item.attempts < MAX_ATTEMPTS) {
           // Ollama failed to run the model (out of memory, a load error): wait a little rather than burn the attempts
           // in a row. Still counted, so an item that always fails cannot hold the head of the queue forever.
           db.prepare("UPDATE queue SET status = 'pending', error = ? WHERE id = ?").run(message, item.id);
           pause ||= backOff(db, 'error', message.slice(0, 160));
           return true;
         }
-        if (item.attempts < MAX_ATTEMPTS) {
+        if (!itemFault && item.attempts < MAX_ATTEMPTS) {
           db.prepare("UPDATE queue SET status = 'pending', error = ? WHERE id = ?").run(message, item.id);
           return false;
         }
