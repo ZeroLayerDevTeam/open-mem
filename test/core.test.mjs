@@ -290,6 +290,7 @@ test('llmParallel sends several items at once, and a turn summary still sees all
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {
+      if (req.url === '/api/ps') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"models":[]}'); return; }
       const [system, user] = JSON.parse(body).messages.map((m) => m.content);
       peak = Math.max(peak, ++now);
       const isSummary = system.startsWith('You summarize');
@@ -337,6 +338,7 @@ test('an item the model loops on is stored without the LLM at once, and the queu
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {
+      if (req.url === '/api/ps') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"models":[]}'); return; }
       const user = JSON.parse(body).messages[1].content;
       const file = user.match(/file_path":"([^"]+)/)?.[1];
       calls.push(file);
